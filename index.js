@@ -4,6 +4,7 @@ const { initDatabase } = require('./src/core/database');
 const { createTelegramBot } = require('./src/telegram/bot');
 const { createWhatsAppBot, getWASocket } = require('./src/whatsapp/bot');
 const { initReminders } = require('./src/core/reminder');
+const { startQRServer } = require('./src/core/qr-server');
 
 async function main() {
   console.log('');
@@ -13,16 +14,20 @@ async function main() {
   console.log('╚══════════════════════════════════════╝');
   console.log('');
 
-  // 1. Init database
+  // 1. Start web server untuk QR code (Railway butuh port aktif)
+  const PORT = process.env.PORT || 3000;
+  startQRServer(PORT);
+
+  // 2. Init database
   initDatabase();
 
-  // 2. Start Telegram bot (sync)
+  // 3. Start Telegram bot (sync)
   const tgBot = createTelegramBot();
 
-  // 3. Start WhatsApp bot (async — scan QR kalau belum punya session)
+  // 4. Start WhatsApp bot (async — scan QR kalau belum punya session)
   await createWhatsAppBot();
 
-  // 4. Init reminder setelah keduanya ready
+  // 5. Init reminder setelah keduanya ready
   //    Delay 3 detik kasih WA socket waktu buat fully connect
   setTimeout(() => {
     initReminders(tgBot, getWASocket());

@@ -12,6 +12,7 @@ const fs = require('fs');
 
 const config = require('../../config');
 const { getOrCreateWallet } = require('../core/database');
+const { setQR, clearQR } = require('../core/qr-server');
 const { addTransaction, getSaldo, getHistory, getLaporan, undoLast } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
@@ -449,9 +450,11 @@ async function createWhatsAppBot() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('\n📱 Scan QR code ini di WhatsApp kamu:\n');
+      // Update QR untuk web server
+      setQR(qr);
+      // Tetap print di terminal juga (Railway logs)
+      console.log('\n📱 QR code tersedia! Buka URL Railway kamu di browser untuk scan.\n');
       qrcode.generate(qr, { small: true });
-      console.log('\n(WhatsApp → Settings → Linked Devices → Link a Device)\n');
     }
 
     if (connection === 'close') {
@@ -471,6 +474,7 @@ async function createWhatsAppBot() {
     }
 
     if (connection === 'open') {
+      clearQR(); // Hapus QR dari web server — sudah terhubung
       console.log('✅ WhatsApp bot aktif');
     }
   });
