@@ -103,22 +103,21 @@ function getLaporan(walletId, period = 'bulan') {
 }
 
 /**
- * Hapus transaksi terakhir (undo)
+ * Hapus transaksi berdasarkan ID
  * @param {string} walletId
- * @returns {object|null} transaksi yang dihapus
+ * @param {number} id - ID transaksi
+ * @returns {object} transaksi yang dihapus
  */
-function undoLast(walletId) {
+function deleteTransaction(walletId, id) {
   const db = getDb();
-  const last = db.prepare(`
-    SELECT * FROM transactions
-    WHERE wallet_id = ?
-    ORDER BY created_at DESC LIMIT 1
-  `).get(walletId);
+  const trx = db.prepare(
+    'SELECT * FROM transactions WHERE id = ? AND wallet_id = ?'
+  ).get(id, walletId);
 
-  if (!last) return null;
+  if (!trx) throw new Error(`Transaksi #${id} tidak ditemukan.`);
 
-  db.prepare('DELETE FROM transactions WHERE id = ?').run(last.id);
-  return last;
+  db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
+  return trx;
 }
 
-module.exports = { addTransaction, getSaldo, getHistory, getLaporan, undoLast };
+module.exports = { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction };

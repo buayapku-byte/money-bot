@@ -173,28 +173,33 @@ function createTelegramBot() {
   });
 
   // ─── /undo ────────────────────────────────────────────
-  bot.command('undo', async (ctx) => {
-    try {
-      const wallet = getWallet(ctx);
-      const deleted = undoLast(wallet.id);
+  bot.command('hapus', async (ctx) => {
+  try {
+    const args = ctx.message.text.split(/\s+/).slice(1);
+    const id = parseInt(args[0]);
 
-      if (!deleted) {
-        return replyMd(ctx, '📭 Tidak ada transaksi yang bisa dibatalkan.');
-      }
-
-      const icon = deleted.type === 'in' ? '📈' : '📉';
-      const { saldo } = getSaldo(wallet.id);
-      await replyMd(ctx,
-        `✅ *Transaksi dibatalkan!*\n\n` +
-        `${icon} ${formatRupiah(deleted.amount)}` +
-        (deleted.note ? ` · ${deleted.note}` : '') + `\n\n` +
-        `💰 Saldo sekarang: *${formatRupiah(saldo)}*`
+    if (!args[0] || isNaN(id) || id <= 0) {
+      return replyError(ctx,
+        `Ketik ID transaksi.\nContoh: \`/hapus 42\`\n\nGunakan \`/history\` untuk lihat ID.`
       );
-    } catch (err) {
-      console.error('[TG /undo]', err);
-      replyError(ctx, 'Gagal undo transaksi.');
     }
-  });
+
+    const wallet = getWallet(ctx);
+    const deleted = deleteTransaction(wallet.id, id);
+    const { saldo } = getSaldo(wallet.id);
+
+    const icon = deleted.type === 'in' ? '📈' : '📉';
+    await replyMd(ctx,
+      `🗑️ *Transaksi dihapus!*\n\n` +
+      `${icon} #${deleted.id} ${formatRupiah(deleted.amount)}` +
+      (deleted.note ? ` · ${deleted.note}` : '') +
+      `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`
+    );
+  } catch (err) {
+    console.error('[TG /hapus]', err);
+    replyError(ctx, err.message || 'Gagal hapus transaksi.');
+  }
+});
 
   // ─── /laporan ─────────────────────────────────────────
   // Usage: /laporan hari | /laporan minggu | /laporan bulan

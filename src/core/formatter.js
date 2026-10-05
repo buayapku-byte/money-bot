@@ -81,7 +81,7 @@ function formatHistory(transactions) {
   const rows = transactions.map((t) => {
     const icon = t.type === 'in' ? '📈' : '📉';
     const note = t.note ? ` · ${t.note}` : '';
-    return `${icon} ${formatRupiah(t.amount)}${note}\n   _${t.date}_`;
+    return `${icon} *#${t.id}* ${formatRupiah(t.amount)}${note}\n   _${t.date}_`;
   });
 
   return `📋 *Riwayat Transaksi*\n\n` + rows.join('\n') + `\n\n_Menampilkan ${transactions.length} transaksi terakhir_`;

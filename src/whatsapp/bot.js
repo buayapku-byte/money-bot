@@ -330,31 +330,29 @@ async function handleTabung(sock, msg, args) {
   }
 }
 
-async function handleReminder(sock, msg, args) {
+async function handleHapus(sock, msg, args) {
   try {
-    const input = args[0]?.toLowerCase();
-    if (!input) {
+    const id = parseInt(args[0]);
+
+    if (!args[0] || isNaN(id) || id <= 0) {
       return reply(sock, msg,
-        `❌ Ketik jam atau "off".\nContoh:\n` +
-        `${config.wa.prefix}reminder 20:00\n` +
-        `${config.wa.prefix}reminder off`
+        `❌ Ketik ID transaksi.\nContoh: ${config.wa.prefix}hapus 42\n\nGunakan ${config.wa.prefix}history untuk lihat ID.`
       );
     }
 
     const wallet = getWallet(msg.key.remoteJid);
+    const deleted = deleteTransaction(wallet.id, id);
+    const { saldo } = getSaldo(wallet.id);
 
-    if (input === 'off') {
-      disableReminder(wallet.id);
-      return reply(sock, msg, '🔕 Reminder dimatikan.');
-    }
-
-    const time = setReminder(wallet.id, 'whatsapp', input);
-    return reply(sock, msg,
-      `⏰ *Reminder diset!*\n\nKamu akan dapat notif harian jam *${time}* WIB.`
+    const icon = deleted.type === 'in' ? '📈' : '📉';
+    await reply(sock, msg,
+      `🗑️ *Transaksi dihapus!*\n\n` +
+      `${icon} #${deleted.id} ${formatRupiah(deleted.amount)}` +
+      (deleted.note ? ` · ${deleted.note}` : '') +
+      `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`
     );
   } catch (err) {
-    console.error('[WA /reminder]', err);
-    reply(sock, msg, `❌ ${err.message || 'Terjadi error.'}`);
+    reply(sock, msg, `❌ ${err.message || 'Gagal hapus transaksi.'}`);
   }
 }
 
