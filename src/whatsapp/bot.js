@@ -9,11 +9,11 @@ const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
 const fs = require('fs');
-
+ 
 const config = require('../../config');
 const { getOrCreateWallet } = require('../core/database');
 const { setQR, clearQR } = require('../core/qr-server');
-const { addTransaction, getSaldo, getHistory, getLaporan, undoLast } = require('../core/finance');
+const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -24,12 +24,12 @@ const {
   formatLaporan,
   formatGoals,
 } = require('../core/formatter');
-
+ 
 // ─── State ────────────────────────────────────────────────
 let waSocket = null;
-
+ 
 // ─── Helper ───────────────────────────────────────────────
-
+ 
 /**
  * Parse jumlah uang — sama seperti Telegram (500rb, 1.5jt, 1k, dll)
  */
@@ -44,7 +44,7 @@ function parseJumlah(str) {
   const n = parseFloat(s.replace(/[^\d.]/g, ''));
   return isNaN(n) ? null : n;
 }
-
+ 
 /**
  * Strip Markdown formatting untuk WA (WA punya format sendiri)
  * *bold* → *bold* (WA support)
@@ -56,14 +56,14 @@ function stripForWA(text) {
     .replace(/`([^`]+)`/g, '$1')   // hapus backtick code
     .replace(/\n---+\n/g, '\n─────────────────\n'); // ganti HR
 }
-
+ 
 /**
  * Ambil wallet dari pesan WA
  */
 function getWallet(chatId, chatName = '') {
   return getOrCreateWallet('whatsapp', chatId, chatName);
 }
-
+ 
 /**
  * Kirim pesan teks ke chat WA
  */
@@ -75,7 +75,7 @@ async function send(jid, text) {
     console.error('[WA send error]', err.message);
   }
 }
-
+ 
 /**
  * Kirim pesan reply (quote)
  */
@@ -88,9 +88,9 @@ async function reply(sock, msg, text) {
     console.error('[WA reply error]', err.message);
   }
 }
-
+ 
 // ─── Command Handlers ─────────────────────────────────────
-
+ 
 async function handleHelp(sock, msg) {
   const prefix = config.wa.prefix;
   await reply(sock, msg,
@@ -100,7 +100,8 @@ async function handleHelp(sock, msg) {
     `${prefix}catat keluar 50rb makan\n` +
     `${prefix}saldo — lihat saldo\n` +
     `${prefix}history — 10 transaksi terakhir\n` +
-    `${prefix}undo — batalkan transaksi terakhir\n\n` +
+    `${prefix}undo — batalkan transaksi terakhir\n` +
+    `${prefix}hapus [id] — hapus transaksi by ID\n\n` +
     `🎯 *Target Tabungan*\n` +
     `${prefix}target buat Liburan 3jt\n` +
     `${prefix}target buat HP 5jt 2026-12-31\n` +
@@ -117,13 +118,13 @@ async function handleHelp(sock, msg) {
     `_Shorthand: 500rb · 1.5jt · 1k_`
   );
 }
-
+ 
 async function handleCatat(sock, msg, args, senderName) {
   const chatId = msg.key.remoteJid;
   const typeRaw = args[0]?.toLowerCase();
   const amountRaw = args[1];
   const note = args.slice(2).join(' ') || '';
-
+ 
   if (!typeRaw || !['masuk', 'keluar', 'in', 'out'].includes(typeRaw)) {
     return reply(sock, msg,
       `❌ Format salah!\nContoh:\n` +
@@ -131,16 +132,16 @@ async function handleCatat(sock, msg, args, senderName) {
       `${config.wa.prefix}catat keluar 50rb makan`
     );
   }
-
+ 
   const amount = parseJumlah(amountRaw);
   if (!amount || amount <= 0) {
     return reply(sock, msg,
       `❌ Jumlah tidak valid: *${amountRaw}*\nContoh: 500000 · 500rb · 1.5jt · 1k`
     );
   }
-
+ 
   const type = ['masuk', 'in'].includes(typeRaw) ? 'in' : 'out';
-
+ 
   try {
     const chatName = msg.key.remoteJid.endsWith('@g.us')
       ? '' // nama group diambil saat socket ready, skip dulu
@@ -148,7 +149,7 @@ async function handleCatat(sock, msg, args, senderName) {
     const wallet = getWallet(chatId, chatName);
     const trx = addTransaction(wallet.id, type, amount, note, 'umum', senderName);
     const { saldo } = getSaldo(wallet.id);
-
+ 
     await reply(sock, msg,
       formatTransaksi(trx) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`
     );
@@ -157,7 +158,7 @@ async function handleCatat(sock, msg, args, senderName) {
     reply(sock, msg, '❌ Gagal catat transaksi. Coba lagi.');
   }
 }
-
+ 
 async function handleSaldo(sock, msg) {
   try {
     const wallet = getWallet(msg.key.remoteJid);
@@ -168,7 +169,7 @@ async function handleSaldo(sock, msg) {
     reply(sock, msg, '❌ Gagal ambil saldo.');
   }
 }
-
+ 
 async function handleHistory(sock, msg, args) {
   try {
     const limit = Math.min(parseInt(args[0]) || 10, 30);
@@ -180,16 +181,16 @@ async function handleHistory(sock, msg, args) {
     reply(sock, msg, '❌ Gagal ambil history.');
   }
 }
-
+ 
 async function handleUndo(sock, msg) {
   try {
     const wallet = getWallet(msg.key.remoteJid);
     const deleted = undoLast(wallet.id);
-
+ 
     if (!deleted) {
       return reply(sock, msg, '📭 Tidak ada transaksi yang bisa dibatalkan.');
     }
-
+ 
     const icon = deleted.type === 'in' ? '📈' : '📉';
     const { saldo } = getSaldo(wallet.id);
     await reply(sock, msg,
@@ -203,11 +204,11 @@ async function handleUndo(sock, msg) {
     reply(sock, msg, '❌ Gagal undo transaksi.');
   }
 }
-
+ 
 async function handleLaporan(sock, msg, args) {
   try {
     const period = args[0]?.toLowerCase() || 'bulan';
-
+ 
     if (!['hari', 'minggu', 'bulan'].includes(period)) {
       return reply(sock, msg,
         `❌ Period tidak valid.\nGunakan:\n` +
@@ -216,7 +217,7 @@ async function handleLaporan(sock, msg, args) {
         `${config.wa.prefix}laporan bulan`
       );
     }
-
+ 
     const wallet = getWallet(msg.key.remoteJid);
     const data = getLaporan(wallet.id, period);
     await reply(sock, msg, formatLaporan(data, period));
@@ -225,11 +226,11 @@ async function handleLaporan(sock, msg, args) {
     reply(sock, msg, '❌ Gagal buat laporan.');
   }
 }
-
+ 
 async function handleTarget(sock, msg, args) {
   const prefix = config.wa.prefix;
   const sub = args[0]?.toLowerCase();
-
+ 
   if (!sub || !['lihat', 'buat', 'hapus'].includes(sub)) {
     return reply(sock, msg,
       `❌ Subcommand tidak valid.\nGunakan:\n` +
@@ -238,15 +239,15 @@ async function handleTarget(sock, msg, args) {
       `${prefix}target hapus NamaGoal`
     );
   }
-
+ 
   try {
     const wallet = getWallet(msg.key.remoteJid);
-
+ 
     if (sub === 'lihat') {
       const goals = getGoals(wallet.id);
       return reply(sock, msg, formatGoals(goals, getGoalProgress));
     }
-
+ 
     if (sub === 'hapus') {
       const name = args.slice(1).join(' ');
       if (!name) return reply(sock, msg, `❌ Ketik nama goal.\nContoh: ${prefix}target hapus Liburan`);
@@ -257,24 +258,24 @@ async function handleTarget(sock, msg, args) {
         `Dana terkumpul: ${formatRupiah(deleted.current_amount)}`
       );
     }
-
+ 
     if (sub === 'buat') {
       const lastArg = args[args.length - 1];
       const isDeadline = /^\d{4}-\d{2}-\d{2}$/.test(lastArg);
       const deadline = isDeadline ? lastArg : null;
       const amountArg = isDeadline ? args[args.length - 2] : args[args.length - 1];
       const amount = parseJumlah(amountArg);
-
+ 
       if (!amount || amount <= 0) {
         return reply(sock, msg,
           `❌ Format salah!\nContoh: ${prefix}target buat Liburan 3jt`
         );
       }
-
+ 
       const nameEnd = isDeadline ? args.length - 2 : args.length - 1;
       const name = args.slice(1, nameEnd).join(' ');
       if (!name) return reply(sock, msg, `❌ Ketik nama goal.\nContoh: ${prefix}target buat Liburan Bali 3jt`);
-
+ 
       const goal = createGoal(wallet.id, name, amount, deadline);
       return reply(sock, msg,
         `✅ *Goal dibuat!*\n\n` +
@@ -289,13 +290,13 @@ async function handleTarget(sock, msg, args) {
     reply(sock, msg, `❌ ${err.message || 'Terjadi error.'}`);
   }
 }
-
+ 
 async function handleTabung(sock, msg, args) {
   try {
     const amountRaw = args[0];
     const goalName = args.slice(1).join(' ');
     const amount = parseJumlah(amountRaw);
-
+ 
     if (!amount || amount <= 0) {
       return reply(sock, msg,
         `❌ Format salah!\nContoh: ${config.wa.prefix}tabung 100rb Liburan`
@@ -306,44 +307,47 @@ async function handleTabung(sock, msg, args) {
         `❌ Ketik nama goal tujuan.\nContoh: ${config.wa.prefix}tabung 100rb Liburan`
       );
     }
-
+ 
     const wallet = getWallet(msg.key.remoteJid);
     const { goal, isCompleted } = addToGoal(wallet.id, goalName, amount);
     const { persen } = getGoalProgress(goal);
-
+ 
     let text = `✅ *Tabungan bertambah!*\n\n`;
     text += `🎯 *${goal.name}*\n`;
     text += `Ditambah: *${formatRupiah(amount)}*\n`;
     text += `Terkumpul: ${formatRupiah(goal.current_amount)} / ${formatRupiah(goal.target_amount)}\n`;
     text += `Progress: ${persen}%\n`;
-
+ 
     if (isCompleted) {
       text += `\n🎉 *GOAL TERCAPAI! Selamat!* 🎉`;
     } else {
       text += `Sisa: ${formatRupiah(goal.target_amount - goal.current_amount)}`;
     }
-
+ 
     await reply(sock, msg, text);
   } catch (err) {
     console.error('[WA /tabung]', err);
     reply(sock, msg, `❌ ${err.message || 'Terjadi error.'}`);
   }
 }
-
+ 
 async function handleHapus(sock, msg, args) {
   try {
-    const id = parseInt(args[0]);
-
-    if (!args[0] || isNaN(id) || id <= 0) {
+    const idRaw = args[0];
+    const id = parseInt(idRaw);
+ 
+    if (!idRaw || isNaN(id) || id <= 0) {
       return reply(sock, msg,
-        `❌ Ketik ID transaksi.\nContoh: ${config.wa.prefix}hapus 42\n\nGunakan ${config.wa.prefix}history untuk lihat ID.`
+        `❌ Ketik ID transaksi yang mau dihapus.\n` +
+        `Contoh: ${config.wa.prefix}hapus 42\n\n` +
+        `Gunakan ${config.wa.prefix}history untuk lihat ID transaksi.`
       );
     }
-
+ 
     const wallet = getWallet(msg.key.remoteJid);
     const deleted = deleteTransaction(wallet.id, id);
     const { saldo } = getSaldo(wallet.id);
-
+ 
     const icon = deleted.type === 'in' ? '📈' : '📉';
     await reply(sock, msg,
       `🗑️ *Transaksi dihapus!*\n\n` +
@@ -352,84 +356,117 @@ async function handleHapus(sock, msg, args) {
       `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`
     );
   } catch (err) {
+    console.error('[WA /hapus]', err);
     reply(sock, msg, `❌ ${err.message || 'Gagal hapus transaksi.'}`);
   }
 }
-
+ 
+async function handleReminder(sock, msg, args) {
+  try {
+    const input = args[0]?.toLowerCase();
+    if (!input) {
+      return reply(sock, msg,
+        `❌ Ketik jam atau "off".\nContoh:\n` +
+        `${config.wa.prefix}reminder 20:00\n` +
+        `${config.wa.prefix}reminder off`
+      );
+    }
+ 
+    const wallet = getWallet(msg.key.remoteJid);
+ 
+    if (input === 'off') {
+      disableReminder(wallet.id);
+      return reply(sock, msg, '🔕 Reminder dimatikan.');
+    }
+ 
+    const time = setReminder(wallet.id, 'whatsapp', input);
+    return reply(sock, msg,
+      `⏰ *Reminder diset!*\n\nKamu akan dapat notif harian jam *${time}* WIB.`
+    );
+  } catch (err) {
+    console.error('[WA /reminder]', err);
+    reply(sock, msg, `❌ ${err.message || 'Terjadi error.'}`);
+  }
+}
+ 
 // ─── Router ───────────────────────────────────────────────
-
+ 
 /**
  * Dispatch pesan ke handler yang sesuai
  */
 async function routeMessage(sock, msg, text, senderName) {
   const prefix = config.wa.prefix;
-
+ 
   // Harus diawali prefix
   if (!text.startsWith(prefix)) return;
-
+ 
   // Split command dan args
   const parts = text.slice(prefix.length).trim().split(/\s+/);
   const command = parts[0]?.toLowerCase();
   const args = parts.slice(1);
-
+ 
   console.log(`[WA] ${senderName}: ${text}`);
-
+ 
   switch (command) {
     case 'help':
     case 'bantuan':
       return handleHelp(sock, msg);
-
+ 
     case 'catat':
       return handleCatat(sock, msg, args, senderName);
-
+ 
     case 'saldo':
       return handleSaldo(sock, msg);
-
+ 
     case 'history':
     case 'riwayat':
       return handleHistory(sock, msg, args);
-
+ 
     case 'undo':
     case 'batal':
       return handleUndo(sock, msg);
-
+ 
+    case 'hapus':
+    case 'delete':
+      return handleHapus(sock, msg, args);
+ 
     case 'laporan':
     case 'report':
       return handleLaporan(sock, msg, args);
-
+ 
     case 'target':
     case 'goal':
       return handleTarget(sock, msg, args);
-
+ 
     case 'tabung':
     case 'nabung':
       return handleTabung(sock, msg, args);
-
+ 
     case 'reminder':
     case 'notif':
       return handleReminder(sock, msg, args);
-
+ 
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
       break;
   }
 }
-
+ 
 // ─── Bot Setup ────────────────────────────────────────────
-
+ 
 async function createWhatsAppBot() {
   // Pastiin folder session ada
   if (!fs.existsSync(config.whatsapp.sessionPath)) {
     fs.mkdirSync(config.whatsapp.sessionPath, { recursive: true });
   }
-
+ 
   const { state, saveCreds } = await useMultiFileAuthState(config.whatsapp.sessionPath);
   const { version } = await fetchLatestBaileysVersion();
-
+ 
   const logger = config.whatsapp.silent
     ? pino({ level: 'silent' })
     : pino({ level: 'warn' });
-
+ 
   const sock = makeWASocket({
     version,
     auth: {
@@ -442,11 +479,11 @@ async function createWhatsAppBot() {
     // Hanya receive teks — lebih efisien
     getMessage: async () => ({ conversation: '' }),
   });
-
+ 
   // ─── Connection handler ──────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
-
+ 
     if (qr) {
       // Update QR untuk web server
       setQR(qr);
@@ -454,14 +491,14 @@ async function createWhatsAppBot() {
       console.log('\n📱 QR code tersedia! Buka URL Railway kamu di browser untuk scan.\n');
       qrcode.generate(qr, { small: true });
     }
-
+ 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error instanceof Boom
         ? lastDisconnect.error.output?.statusCode
         : null;
-
+ 
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
+ 
       if (shouldReconnect) {
         console.log(`🔄 WA disconnected (${statusCode}), reconnecting in 5s...`);
         setTimeout(() => createWhatsAppBot(), 5000);
@@ -470,25 +507,25 @@ async function createWhatsAppBot() {
         console.log(`   rm -rf ${config.whatsapp.sessionPath} && node index.js`);
       }
     }
-
+ 
     if (connection === 'open') {
       clearQR(); // Hapus QR dari web server — sudah terhubung
       console.log('✅ WhatsApp bot aktif');
     }
   });
-
+ 
   // ─── Simpan credentials ──────────────────────────────
   sock.ev.on('creds.update', saveCreds);
-
+ 
   // ─── Handler pesan masuk ─────────────────────────────
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     // Hanya proses notif baru — skip history
     if (type !== 'notify') return;
-
+ 
     for (const msg of messages) {
       // Skip pesan dari bot sendiri
       if (msg.key.fromMe) continue;
-
+ 
       // Ambil teks pesan
       const text = (
         msg.message?.conversation ||
@@ -496,17 +533,17 @@ async function createWhatsAppBot() {
         msg.message?.ephemeralMessage?.message?.conversation ||
         ''
       ).trim();
-
+ 
       if (!text) continue;
-
+ 
       // Ambil nama pengirim
       const senderJid = msg.key.participant || msg.key.remoteJid;
       const senderName = msg.pushName || senderJid.split('@')[0] || 'Unknown';
-
+ 
       // Auto-create wallet untuk chat ini
       const chatId = msg.key.remoteJid;
       getOrCreateWallet('whatsapp', chatId, '');
-
+ 
       try {
         await routeMessage(sock, msg, text, senderName);
       } catch (err) {
@@ -514,13 +551,13 @@ async function createWhatsAppBot() {
       }
     }
   });
-
+ 
   waSocket = sock;
   return sock;
 }
-
+ 
 function getWASocket() {
   return waSocket;
 }
-
+ 
 module.exports = { createWhatsAppBot, getWASocket };
