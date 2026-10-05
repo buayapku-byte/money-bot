@@ -1,12 +1,12 @@
 const { Telegraf, Markup } = require('telegraf');
 const config = require('../../config');
 const { getOrCreateWallet } = require('../core/database');
-const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction } = require('../core/finance');
+const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
   formatRupiah, formatSaldo, formatTransaksi,
-  formatHistory, formatLaporan, formatGoals,
+  formatHistory, formatLaporan, formatKategori, formatGoals,
 } = require('../core/formatter');
  
 // ─── Helper ───────────────────────────────────────────────
@@ -94,7 +94,8 @@ function createTelegramBot() {
       `📊 *Laporan*\n` +
       `\`/laporan hari\` — laporan hari ini\n` +
       `\`/laporan minggu\` — laporan 7 hari terakhir\n` +
-      `\`/laporan bulan\` — laporan bulan ini\n\n` +
+      `\`/laporan bulan\` — laporan bulan ini\n` +
+      `\`/kategori [hari/minggu/bulan]\` — breakdown per kategori\n\n` +
       `⏰ *Reminder*\n` +
       `\`/reminder 20:00\` — set notif harian jam 20:00\n` +
       `\`/reminder off\` — matiin reminder\n`
@@ -340,6 +341,28 @@ function createTelegramBot() {
     } catch (err) {
       console.error('[TG /tabung]', err);
       replyError(ctx, err.message || 'Terjadi error.');
+    }
+  });
+ 
+  // ─── /kategori ────────────────────────────────────────
+  // Usage: /kategori | /kategori hari | /kategori minggu | /kategori bulan
+  bot.command('kategori', async (ctx) => {
+    try {
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      const period = args[0]?.toLowerCase() || 'bulan';
+ 
+      if (!['hari', 'minggu', 'bulan'].includes(period)) {
+        return replyError(ctx,
+          `Period tidak valid.\nGunakan: \`/kategori hari\`, \`/kategori minggu\`, atau \`/kategori bulan\``
+        );
+      }
+ 
+      const wallet = getWallet(ctx);
+      const rows = getLaporanKategori(wallet.id, period);
+      await replyMd(ctx, formatKategori(rows, period));
+    } catch (err) {
+      console.error('[TG /kategori]', err);
+      replyError(ctx, 'Gagal buat laporan kategori.');
     }
   });
  

@@ -120,6 +120,54 @@ function formatLaporan({ transactions, summary }, period) {
 }
  
 /**
+ * Format laporan per kategori
+ */
+function formatKategori(rows, period) {
+  const labelPeriod = { hari: 'Hari Ini', minggu: 'Minggu Ini', bulan: 'Bulan Ini' };
+  const label = labelPeriod[period] || 'Bulan Ini';
+ 
+  const ICON = {
+    makan: '🍽️', transport: '🚗', belanja: '🛍️', tagihan: '💡',
+    hiburan: '🎮', kesehatan: '🏥', gaji: '💼', bonus: '🎁',
+    transfer: '💸', umum: '📌',
+  };
+ 
+  const keluar = rows.filter(r => r.type === 'out').sort((a, b) => b.total - a.total);
+  const masuk  = rows.filter(r => r.type === 'in').sort((a, b) => b.total - a.total);
+  const totalKeluar = keluar.reduce((s, r) => s + r.total, 0);
+  const totalMasuk  = masuk.reduce((s, r) => s + r.total, 0);
+ 
+  let msg = `📊 *Laporan Kategori — ${label}*\n\n`;
+ 
+  if (keluar.length) {
+    msg += `📉 *Pengeluaran:*\n`;
+    keluar.forEach(r => {
+      const icon   = ICON[r.category] || '📌';
+      const persen = totalKeluar > 0 ? Math.round((r.total / totalKeluar) * 100) : 0;
+      const bar    = progressBar(persen, 8);
+      msg += `${icon} *${r.category}*\n   ${bar}\n   ${formatRupiah(r.total)} · ${r.jumlah}x\n\n`;
+    });
+    msg += `─────────────────\n`;
+    msg += `Total: *${formatRupiah(totalKeluar)}*\n\n`;
+  }
+ 
+  if (masuk.length) {
+    msg += `📈 *Pemasukan:*\n`;
+    masuk.forEach(r => {
+      const icon   = ICON[r.category] || '📌';
+      const persen = totalMasuk > 0 ? Math.round((r.total / totalMasuk) * 100) : 0;
+      msg += `${icon} *${r.category}*: ${formatRupiah(r.total)} (${persen}%) · ${r.jumlah}x\n`;
+    });
+  }
+ 
+  if (!keluar.length && !masuk.length) {
+    msg += '_Belum ada transaksi di periode ini._\n\nCoba: `/kategori bulan`';
+  }
+ 
+  return msg.trim();
+}
+ 
+/**
  * Format daftar goals
  */
 function formatGoals(goals, getGoalProgress) {
@@ -150,5 +198,6 @@ module.exports = {
   formatTransaksi,
   formatHistory,
   formatLaporan,
+  formatKategori,
   formatGoals,
 };

@@ -4,6 +4,34 @@
  
 const { getDb } = require('./database');
  
+// ─── Category Detection ───────────────────────────────────
+ 
+const KATEGORI_KEYWORDS = {
+  makan:     ['makan', 'minum', 'resto', 'restoran', 'warteg', 'warung', 'kafe', 'cafe', 'coffee', 'snack', 'jajan', 'lunch', 'dinner', 'breakfast', 'sarapan', 'nasi', 'ayam', 'bakso', 'mie', 'pizza', 'burger', 'soto', 'pecel', 'gado'],
+  transport: ['ojek', 'gojek', 'grab', 'maxim', 'taxi', 'taksi', 'bensin', 'bbm', 'parkir', 'toll', 'tol', 'bus', 'kereta', 'commuter', 'angkot', 'inpres', 'uber'],
+  belanja:   ['belanja', 'shopee', 'tokopedia', 'lazada', 'toko', 'mall', 'supermarket', 'indomaret', 'alfamart', 'hypermart', 'carrefour', 'beli'],
+  tagihan:   ['listrik', 'air', 'pdam', 'internet', 'wifi', 'pulsa', 'token', 'tagihan', 'iuran', 'sewa', 'kos', 'kontrakan', 'cicilan', 'kredit', 'pln'],
+  hiburan:   ['hiburan', 'nonton', 'bioskop', 'game', 'spotify', 'netflix', 'youtube', 'film', 'konser', 'liburan', 'wisata', 'hotel'],
+  kesehatan: ['kesehatan', 'dokter', 'obat', 'apotek', 'klinik', 'rumah sakit', 'vitamin', 'gym', 'fitness'],
+  gaji:      ['gaji', 'salary', 'upah', 'honor', 'komisi', 'bayaran'],
+  bonus:     ['bonus', 'thr', 'reward', 'hadiah', 'cashback'],
+  transfer:  ['transfer', 'kirim', 'terima', 'tf'],
+};
+ 
+/**
+ * Deteksi kategori otomatis dari catatan
+ * @param {string} note
+ * @returns {string} kategori
+ */
+function detectCategory(note) {
+  if (!note) return 'umum';
+  const lower = note.toLowerCase();
+  for (const [kategori, keywords] of Object.entries(KATEGORI_KEYWORDS)) {
+    if (keywords.some(kw => lower.includes(kw))) return kategori;
+  }
+  return 'umum';
+}
+ 
 /**
  * Catat transaksi baru
  * @param {string} walletId - ID wallet (e.g. "tg:123456")
@@ -16,10 +44,12 @@ const { getDb } = require('./database');
  */
 function addTransaction(walletId, type, amount, note = '', category = 'umum', createdBy = '') {
   const db = getDb();
+  // Auto-detect kategori dari note kalau masih 'umum'
+  const finalCategory = (category === 'umum' && note) ? detectCategory(note) : category;
   const result = db.prepare(`
     INSERT INTO transactions (wallet_id, type, amount, note, category, created_by)
     VALUES (?, ?, ?, ?, ?, ?)
-  `).run(walletId, type, amount, note, category, createdBy);
+  `).run(walletId, type, amount, note, finalCategory, createdBy);
  
   return db.prepare('SELECT * FROM transactions WHERE id = ?').get(result.lastInsertRowid);
 }
@@ -139,4 +169,32 @@ function deleteTransaction(walletId, id) {
   return trx;
 }
  
-module.exports = { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction };
+/**
+ * Ambil laporan transaksi dikelompokkan per kategori
+ * @param {string} walletId
+ * @param {string} period - 'hari' | 'minggu' | 'bulan'
+ * @returns {Array} [{ category, type, total, jumlah }]
+ */
+function getLaporanKategori(walletId, period = 'bulan') {
+  const db = getDb();
+ 
+  const dateFilter = {
+    hari:   "date = date('now', 'localtime')",
+    minggu: "date >= date('now', 'localtime', '-6 days')",
+    bulan:  "strftime('%Y-%m', date) = strftime('%Y-%m', 'now', 'localtime')",
+  };
+ 
+  const filter = dateFilter[period] || dateFilter.bulan;
+ 
+  return db.prepare(`
+    SELECT category, type,
+      SUM(amount) AS total,
+      COUNT(*) AS jumlah
+    FROM transactions
+    WHERE wallet_id = ? AND ${filter}
+    GROUP BY category, type
+    ORDER BY total DESC
+  `).all(walletId);
+}
+ 
+module.exports = { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori };

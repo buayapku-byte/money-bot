@@ -13,7 +13,7 @@ const fs = require('fs');
 const config = require('../../config');
 const { getOrCreateWallet } = require('../core/database');
 const { setQR, clearQR } = require('../core/qr-server');
-const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction } = require('../core/finance');
+const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -22,6 +22,7 @@ const {
   formatTransaksi,
   formatHistory,
   formatLaporan,
+  formatKategori,
   formatGoals,
 } = require('../core/formatter');
  
@@ -111,7 +112,8 @@ async function handleHelp(sock, msg) {
     `📊 *Laporan*\n` +
     `${prefix}laporan hari\n` +
     `${prefix}laporan minggu\n` +
-    `${prefix}laporan bulan\n\n` +
+    `${prefix}laporan bulan\n` +
+    `${prefix}kategori [hari/minggu/bulan]\n\n` +
     `⏰ *Reminder*\n` +
     `${prefix}reminder 20:00 — aktifkan notif harian\n` +
     `${prefix}reminder off — matikan notif\n\n` +
@@ -361,6 +363,26 @@ async function handleHapus(sock, msg, args) {
   }
 }
  
+async function handleKategori(sock, msg, args) {
+  try {
+    const period = args[0]?.toLowerCase() || 'bulan';
+    if (!['hari', 'minggu', 'bulan'].includes(period)) {
+      return reply(sock, msg,
+        `❌ Period tidak valid.\nGunakan:\n` +
+        `${config.wa.prefix}kategori hari\n` +
+        `${config.wa.prefix}kategori minggu\n` +
+        `${config.wa.prefix}kategori bulan`
+      );
+    }
+    const wallet = getWallet(msg.key.remoteJid);
+    const rows = getLaporanKategori(wallet.id, period);
+    await reply(sock, msg, formatKategori(rows, period));
+  } catch (err) {
+    console.error('[WA /kategori]', err);
+    reply(sock, msg, '❌ Gagal buat laporan kategori.');
+  }
+}
+ 
 async function handleReminder(sock, msg, args) {
   try {
     const input = args[0]?.toLowerCase();
@@ -433,6 +455,10 @@ async function routeMessage(sock, msg, text, senderName) {
     case 'laporan':
     case 'report':
       return handleLaporan(sock, msg, args);
+ 
+    case 'kategori':
+    case 'category':
+      return handleKategori(sock, msg, args);
  
     case 'target':
     case 'goal':
