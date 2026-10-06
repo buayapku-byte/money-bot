@@ -16,6 +16,7 @@ const {
   formatHistory, formatLaporan, formatKategori, formatGoals,
   formatBudgets, formatRecurring, formatAnalisis, formatKekayaan,
 } = require('../core/formatter');
+const { buildChartConfig, fetchGrafikBuffer, buildGrafikCaption } = require('../core/grafik');
 const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
   'Juli','Agustus','September','Oktober','November','Desember'];
  
@@ -943,6 +944,38 @@ function createTelegramBot() {
     } catch (err) {
       console.error('[TG /kekayaan]', err);
       replyError(ctx, err.message || 'Terjadi error.');
+    }
+  });
+ 
+  // ─── /grafik ──────────────────────────────────────────
+  // Usage: /grafik | /grafik hari | /grafik minggu | /grafik bulan
+  bot.command('grafik', async (ctx) => {
+    try {
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      const period = args[0]?.toLowerCase() || 'bulan';
+ 
+      if (!['hari', 'minggu', 'bulan'].includes(period)) {
+        return replyError(ctx,
+          `Period tidak valid.\nGunakan: \`/grafik\`, \`/grafik hari\`, \`/grafik minggu\`, atau \`/grafik bulan\``
+        );
+      }
+ 
+      const wallet = getWallet(ctx);
+      const result = buildChartConfig(wallet.id, period, wallet.lang);
+ 
+      if (!result) {
+        return replyMd(ctx, wallet.lang === 'en'
+          ? '📭 No expenses recorded for this period.'
+          : '📭 Belum ada pengeluaran untuk periode ini.');
+      }
+ 
+      await ctx.replyWithChatAction('upload_photo');
+      const buffer = await fetchGrafikBuffer(result.config);
+      const caption = buildGrafikCaption(result.keluar, result.total, period, wallet.lang);
+      await ctx.replyWithPhoto({ source: buffer }, { caption, parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error('[TG /grafik]', err);
+      replyError(ctx, 'Gagal buat grafik. Coba lagi.');
     }
   });
  

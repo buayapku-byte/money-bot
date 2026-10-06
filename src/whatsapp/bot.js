@@ -36,6 +36,7 @@ const {
   formatAnalisis,
   formatKekayaan,
 } = require('../core/formatter');
+const { buildChartConfig, fetchGrafikBuffer, buildGrafikCaption } = require('../core/grafik');
 const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
   'Juli','Agustus','September','Oktober','November','Desember'];
  
@@ -908,6 +909,42 @@ async function handleBahasa(sock, msg, args) {
   }
 }
  
+// ─── Grafik / Chart ───────────────────────────────────────
+ 
+async function handleGrafik(sock, msg, args) {
+  const chatId = msg.key.remoteJid;
+  try {
+    const period = args[0]?.toLowerCase() || 'bulan';
+ 
+    if (!['hari', 'minggu', 'bulan'].includes(period)) {
+      const prefix = config.wa.prefix;
+      return reply(sock, msg,
+        `❌ Period tidak valid.\nGunakan:\n` +
+        `${prefix}grafik\n` +
+        `${prefix}grafik hari\n` +
+        `${prefix}grafik minggu\n` +
+        `${prefix}grafik bulan`
+      );
+    }
+ 
+    const wallet = getWallet(chatId);
+    const result = buildChartConfig(wallet.id, period, wallet.lang);
+ 
+    if (!result) {
+      return reply(sock, msg, wallet.lang === 'en'
+        ? '📭 No expenses recorded for this period.'
+        : '📭 Belum ada pengeluaran untuk periode ini.');
+    }
+ 
+    const buffer = await fetchGrafikBuffer(result.config);
+    const caption = buildGrafikCaption(result.keluar, result.total, period, wallet.lang);
+    await sock.sendMessage(chatId, { image: buffer, caption }, { quoted: msg });
+  } catch (err) {
+    console.error('[WA !grafik]', err);
+    reply(sock, msg, '❌ Gagal buat grafik. Coba lagi.');
+  }
+}
+ 
 // ─── Router ───────────────────────────────────────────────
  
 /**
@@ -1001,6 +1038,10 @@ async function routeMessage(sock, msg, text, senderName) {
     case 'bahasa':
     case 'language':
       return handleBahasa(sock, msg, args);
+ 
+    case 'grafik':
+    case 'chart':
+      return handleGrafik(sock, msg, args);
  
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
