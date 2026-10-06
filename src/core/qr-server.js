@@ -93,6 +93,50 @@ function getWalletDashboard(walletId) {
   };
 }
  
+// ─── Transaction Filter & Export Helpers ──────────────────
+ 
+function getTransactionsFiltered(walletId, { from, to, category, q, limit = 100 }) {
+  const db = safeGetDb();
+  if (!db) return [];
+  try {
+    let sql = 'SELECT * FROM transactions WHERE wallet_id = ?';
+    const params = [walletId];
+    if (from)     { sql += ' AND date >= ?';                        params.push(from); }
+    if (to)       { sql += ' AND date <= ?';                        params.push(to); }
+    if (category) { sql += ' AND category = ?';                     params.push(category); }
+    if (q)        { sql += ' AND (note LIKE ? OR category LIKE ?)'; params.push('%' + q + '%', '%' + q + '%'); }
+    sql += ' ORDER BY date DESC, created_at DESC LIMIT ?';
+    params.push(Number(limit) || 100);
+    return db.prepare(sql).all(...params);
+  } catch { return []; }
+}
+ 
+function getAllCategories(walletId) {
+  const db = safeGetDb();
+  if (!db) return [];
+  try {
+    return db.prepare(
+      'SELECT DISTINCT category FROM transactions WHERE wallet_id = ? ORDER BY category'
+    ).all(walletId).map(r => r.category);
+  } catch { return []; }
+}
+ 
+function toCSV(transactions) {
+  const headers = ['ID', 'Tanggal', 'Tipe', 'Jumlah', 'Kategori', 'Catatan', 'Dicatat Oleh', 'Waktu'];
+  const rows = transactions.map(t => [
+    t.id, t.date,
+    t.type === 'in' ? 'Masuk' : 'Keluar',
+    t.amount,
+    t.category,
+    t.note || '',
+    t.created_by || '',
+    t.created_at,
+  ]);
+  return [headers, ...rows]
+    .map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(','))
+    .join('\n');
+}
+ 
 // ─── QR Page HTML ─────────────────────────────────────────
  
 const QR_HTML = `<!DOCTYPE html>
@@ -358,6 +402,30 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .kat-bar-fill.out { background: linear-gradient(90deg, #ef4444, #f87171); }
     .kat-bar-fill.in  { background: linear-gradient(90deg, #16a34a, #4ade80); }
     .kat-count { font-size: 0.7rem; color: #9ca3af; margin-top: 2px; }
+ 
+    /* ── Filter Bar ── */
+    .filter-card {
+      background: white; border-radius: 12px; padding: 18px 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06); margin-bottom: 20px;
+    }
+    .filter-bar {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 12px;
+    }
+    .filter-group { display: flex; flex-direction: column; gap: 4px; }
+    .filter-group label { font-size: 0.75rem; color: #6b7280; font-weight: 500; }
+    .filter-group input, .filter-group select {
+      padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 8px;
+      font-size: 0.85rem; background: #f9fafb; color: #111; min-width: 130px;
+    }
+    .filter-group input:focus, .filter-group select:focus { outline: none; border-color: #16a34a; }
+    .filter-actions { display: flex; gap: 8px; align-items: flex-end; margin-left: auto; flex-wrap: wrap; }
+    .btn { padding: 7px 16px; border-radius: 8px; border: none; font-size: 0.84rem; font-weight: 600; cursor: pointer; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary   { background: #16a34a; color: white; }
+    .btn-secondary { background: #f0f0f0; color: #555; }
+    .btn-export    { background: #2563eb; color: white; }
+    .txn-count { font-size: 0.8rem; color: #9ca3af; margin-bottom: 10px; }
+    @media (max-width: 580px) { .filter-actions { margin-left: 0; width: 100%; } }
   </style>
 </head>
 <body>
@@ -411,8 +479,38 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     <div class="empty">Pilih wallet untuk lihat target tabungan</div>
   </div>
  
+  <div class="filter-card">
+    <div class="section-title">🔍 Filter Transaksi</div>
+    <div class="filter-bar">
+      <div class="filter-group">
+        <label>Dari Tanggal</label>
+        <input type="date" id="f-from">
+      </div>
+      <div class="filter-group">
+        <label>Sampai Tanggal</label>
+        <input type="date" id="f-to">
+      </div>
+      <div class="filter-group">
+        <label>Kategori</label>
+        <select id="f-category">
+          <option value="">Semua Kategori</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Cari Catatan</label>
+        <input type="text" id="f-q" placeholder="Cari catatan / kategori..." style="min-width:170px">
+      </div>
+      <div class="filter-actions">
+        <button class="btn btn-primary" onclick="applyFilter()">🔍 Cari</button>
+        <button class="btn btn-secondary" onclick="resetFilter()">↩️ Reset</button>
+        <button class="btn btn-export" onclick="exportCSV()">📥 Export CSV</button>
+      </div>
+    </div>
+  </div>
+ 
   <div class="txn-card">
-    <div class="section-title">🕐 Transaksi Terakhir</div>
+    <div class="section-title">🕐 Transaksi</div>
+    <div class="txn-count" id="txn-count"></div>
     <ul class="txn-list" id="txn-list">
       <li class="empty">Pilih wallet untuk lihat transaksi</li>
     </ul>
@@ -582,10 +680,73 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }).join('');
   }
  
+  let currentWalletId = null;
+ 
+  function buildFilterParams() {
+    return {
+      from:     document.getElementById('f-from').value,
+      to:       document.getElementById('f-to').value,
+      category: document.getElementById('f-category').value,
+      q:        document.getElementById('f-q').value,
+    };
+  }
+ 
+  async function loadTransactions(walletId, filters = {}) {
+    const params = new URLSearchParams({ wallet: walletId });
+    if (filters.from)     params.set('from', filters.from);
+    if (filters.to)       params.set('to', filters.to);
+    if (filters.category) params.set('category', filters.category);
+    if (filters.q)        params.set('q', filters.q);
+    try {
+      const res  = await fetch('/api/transactions?' + params);
+      const txns = await res.json();
+      document.getElementById('txn-count').textContent = txns.length + ' transaksi ditemukan';
+      renderTransactions(txns);
+    } catch {
+      document.getElementById('txn-list').innerHTML = '<li class="empty">Gagal memuat transaksi.</li>';
+    }
+  }
+ 
+  async function loadCategories(walletId) {
+    try {
+      const res  = await fetch('/api/categories?wallet=' + encodeURIComponent(walletId));
+      const cats = await res.json();
+      const sel  = document.getElementById('f-category');
+      sel.innerHTML = '<option value="">Semua Kategori</option>' +
+        cats.map(c => \`<option value="\${c}">\${c}</option>\`).join('');
+    } catch {}
+  }
+ 
+  function applyFilter() {
+    if (!currentWalletId) return;
+    loadTransactions(currentWalletId, buildFilterParams());
+  }
+ 
+  function resetFilter() {
+    document.getElementById('f-from').value      = '';
+    document.getElementById('f-to').value        = '';
+    document.getElementById('f-category').value  = '';
+    document.getElementById('f-q').value         = '';
+    if (currentWalletId) loadTransactions(currentWalletId);
+  }
+ 
+  function exportCSV() {
+    if (!currentWalletId) { alert('Pilih wallet dulu!'); return; }
+    const params = new URLSearchParams({ wallet: currentWalletId });
+    const f = buildFilterParams();
+    if (f.from)     params.set('from', f.from);
+    if (f.to)       params.set('to', f.to);
+    if (f.category) params.set('category', f.category);
+    if (f.q)        params.set('q', f.q);
+    window.open('/api/export?' + params, '_blank');
+  }
+ 
   async function loadDashboard(walletId) {
+    currentWalletId = walletId;
     document.getElementById('stat-saldo').textContent  = '...';
     document.getElementById('stat-masuk').textContent  = '...';
     document.getElementById('stat-keluar').textContent = '...';
+    document.getElementById('txn-count').textContent   = '';
     try {
       const res  = await fetch('/api/dashboard?wallet=' + encodeURIComponent(walletId));
       const data = await res.json();
@@ -596,7 +757,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       renderChart(data.chartData);
       renderKategori(data.kategori || []);
       renderGoals(data.goals);
-      renderTransactions(data.recent);
+      // Reset filter lalu load semua transaksi
+      document.getElementById('f-from').value     = '';
+      document.getElementById('f-to').value       = '';
+      document.getElementById('f-category').value = '';
+      document.getElementById('f-q').value        = '';
+      loadTransactions(walletId);
+      loadCategories(walletId);
     } catch (err) {
       document.getElementById('stat-saldo').textContent = 'Error';
       console.error(err);
@@ -670,6 +837,65 @@ function startQRServer(port) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: err.message }));
       }
+      return;
+    }
+ 
+    // /api/transactions?wallet=xxx&from=&to=&category=&q=&limit=
+    if (pathname === '/api/transactions') {
+      const walletId = parsed.searchParams.get('wallet');
+      if (!walletId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'wallet param wajib ada' }));
+        return;
+      }
+      const filters = {
+        from:     parsed.searchParams.get('from')     || '',
+        to:       parsed.searchParams.get('to')       || '',
+        category: parsed.searchParams.get('category') || '',
+        q:        parsed.searchParams.get('q')        || '',
+        limit:    parseInt(parsed.searchParams.get('limit') || '200'),
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getTransactionsFiltered(walletId, filters)));
+      return;
+    }
+ 
+    // /api/categories?wallet=xxx
+    if (pathname === '/api/categories') {
+      const walletId = parsed.searchParams.get('wallet');
+      if (!walletId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'wallet param wajib ada' }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getAllCategories(walletId)));
+      return;
+    }
+ 
+    // /api/export?wallet=xxx&from=&to=&category=&q=
+    if (pathname === '/api/export') {
+      const walletId = parsed.searchParams.get('wallet');
+      if (!walletId) {
+        res.writeHead(400, { 'Content-Type': 'text/plain' });
+        res.end('wallet param wajib ada');
+        return;
+      }
+      const filters = {
+        from:     parsed.searchParams.get('from')     || '',
+        to:       parsed.searchParams.get('to')       || '',
+        category: parsed.searchParams.get('category') || '',
+        q:        parsed.searchParams.get('q')        || '',
+        limit:    5000,
+      };
+      const txns = getTransactionsFiltered(walletId, filters);
+      const csv  = toCSV(txns);
+      const filename = 'transaksi-' + new Date().toISOString().slice(0, 10) + '.csv';
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+      });
+      res.end('﻿' + csv); // BOM supaya Excel baca UTF-8 dengan benar
       return;
     }
  
