@@ -7,7 +7,7 @@ module.exports = {
  
   whatsapp: {
     sessionPath: process.env.WA_SESSION_PATH || './data/wa-session',
-    phoneNumber: process.env.WA_PHONE_NUMBER || '',  // e.g. '6281234567890'
+    phoneNumber: process.env.WA_PHONE_NUMBER || '',  // e.g. '85569981401'
     silent: process.env.SILENT_WA === 'true',
   },
  
