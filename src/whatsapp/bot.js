@@ -963,16 +963,42 @@ async function createWhatsAppBot() {
     getMessage: async () => ({ conversation: '' }),
   });
  
+  // ─── Pairing code (jika WA_PHONE_NUMBER diset & belum registered) ───
+  if (!state.creds.registered && config.whatsapp.phoneNumber) {
+    const phone = config.whatsapp.phoneNumber.replace(/[^0-9]/g, '');
+    setTimeout(async () => {
+      try {
+        const code = await sock.requestPairingCode(phone);
+        console.log(`\n┌──────────────────────────────────┐`);
+        console.log(`│  📱 WhatsApp Pairing Code         │`);
+        console.log(`│                                  │`);
+        console.log(`│       ${code}          │`);
+        console.log(`│                                  │`);
+        console.log(`│  WhatsApp → Setelan →            │`);
+        console.log(`│  Perangkat Tertaut →             │`);
+        console.log(`│  Tautkan dengan nomor telepon    │`);
+        console.log(`└──────────────────────────────────┘\n`);
+      } catch (err) {
+        console.error('[WA] Gagal request pairing code:', err.message);
+        console.log('[WA] Fallback ke QR code...');
+      }
+    }, 3000);
+  }
+ 
   // ─── Connection handler ──────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
  
     if (qr) {
-      // Update QR untuk web server
-      setQR(qr);
-      // Tetap print di terminal juga (Railway logs)
-      console.log('\n📱 QR code tersedia! Buka URL Railway kamu di browser untuk scan.\n');
-      qrcode.generate(qr, { small: true });
+      if (config.whatsapp.phoneNumber) {
+        // Sudah pakai pairing code — QR sebagai fallback saja
+        console.log('[WA] QR tersedia sebagai fallback (pairing code lebih dianjurkan)');
+      } else {
+        // Mode QR biasa
+        setQR(qr);
+        console.log('\n📱 QR code tersedia! Buka URL Railway kamu di browser untuk scan.\n');
+        qrcode.generate(qr, { small: true });
+      }
     }
  
     if (connection === 'close') {
