@@ -72,6 +72,16 @@ function getWalletDashboard(walletId) {
     SELECT * FROM transactions WHERE wallet_id=? ORDER BY created_at DESC LIMIT 10
   `).all(walletId);
  
+  const kategori = db.prepare(`
+    SELECT category, type,
+      SUM(amount) AS total,
+      COUNT(*) AS jumlah
+    FROM transactions
+    WHERE wallet_id=? AND strftime('%Y-%m', date) = strftime('%Y-%m', 'now', 'localtime')
+    GROUP BY category, type
+    ORDER BY total DESC
+  `).all(walletId);
+ 
   return {
     saldo: masuk.t - keluar.t,
     total_masuk: masuk.t,
@@ -79,6 +89,7 @@ function getWalletDashboard(walletId) {
     chartData,
     goals: goalsData,
     recent,
+    kategori,
   };
 }
  
@@ -320,6 +331,33 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
  
     .empty { text-align: center; padding: 28px; color: #9ca3af; font-size: 0.88rem; line-height: 1.6; }
     .goals-section-title { font-size: 0.9rem; font-weight: 600; color: #374151; margin-bottom: 12px; }
+ 
+    .kategori-card {
+      background: white; border-radius: 12px; padding: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06); margin-bottom: 20px;
+    }
+    .kat-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 4px;
+    }
+    @media (max-width: 580px) { .kat-grid { grid-template-columns: 1fr; } }
+    .kat-group-title {
+      font-size: 0.8rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 10px;
+    }
+    .kat-group-title.out { color: #dc2626; }
+    .kat-group-title.in  { color: #16a34a; }
+    .kat-row { margin-bottom: 10px; }
+    .kat-row-top {
+      display: flex; justify-content: space-between;
+      font-size: 0.82rem; margin-bottom: 4px; color: #374151;
+    }
+    .kat-name { font-weight: 600; }
+    .kat-amount { color: #6b7280; }
+    .kat-bar-bg { background: #f0f0f0; border-radius: 999px; height: 6px; overflow: hidden; }
+    .kat-bar-fill { height: 100%; border-radius: 999px; transition: width 0.5s ease; }
+    .kat-bar-fill.out { background: linear-gradient(90deg, #ef4444, #f87171); }
+    .kat-bar-fill.in  { background: linear-gradient(90deg, #16a34a, #4ade80); }
+    .kat-count { font-size: 0.7rem; color: #9ca3af; margin-top: 2px; }
   </style>
 </head>
 <body>
@@ -359,6 +397,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="chart-card">
     <div class="section-title">📅 Pemasukan vs Pengeluaran — 30 Hari Terakhir</div>
     <div class="chart-wrap"><canvas id="myChart"></canvas></div>
+  </div>
+ 
+  <div class="kategori-card">
+    <div class="section-title">📊 Kategori Bulan Ini</div>
+    <div class="kat-grid" id="kat-container">
+      <div class="empty">Pilih wallet untuk lihat kategori</div>
+    </div>
   </div>
  
   <div class="goals-section-title">🎯 Target Tabungan</div>
@@ -460,6 +505,62 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }).join('');
   }
  
+  const KAT_ICON = {
+    makan:'🍽️', transport:'🚗', belanja:'🛍️', tagihan:'💡',
+    hiburan:'🎮', kesehatan:'🏥', gaji:'💼', bonus:'🎁',
+    transfer:'💸', umum:'📌',
+  };
+ 
+  function renderKategori(kategori) {
+    const el = document.getElementById('kat-container');
+    const keluar = kategori.filter(r => r.type === 'out').sort((a,b) => b.total - a.total);
+    const masuk  = kategori.filter(r => r.type === 'in').sort((a,b) => b.total - a.total);
+    const totalKeluar = keluar.reduce((s,r) => s + r.total, 0);
+    const totalMasuk  = masuk.reduce((s,r) => s + r.total, 0);
+ 
+    if (!keluar.length && !masuk.length) {
+      el.innerHTML = '<div class="empty" style="grid-column:1/-1">Belum ada transaksi bulan ini.</div>';
+      return;
+    }
+ 
+    let html = '';
+    if (keluar.length) {
+      html += \`<div>
+        <div class="kat-group-title out">📉 Pengeluaran</div>
+        \${keluar.map(r => {
+          const persen = totalKeluar > 0 ? Math.round((r.total / totalKeluar) * 100) : 0;
+          const icon = KAT_ICON[r.category] || '📌';
+          return \`<div class="kat-row">
+            <div class="kat-row-top">
+              <span class="kat-name">\${icon} \${r.category}</span>
+              <span class="kat-amount">\${formatRp(r.total)}</span>
+            </div>
+            <div class="kat-bar-bg"><div class="kat-bar-fill out" style="width:\${persen}%"></div></div>
+            <div class="kat-count">\${r.jumlah}x · \${persen}%</div>
+          </div>\`;
+        }).join('')}
+      </div>\`;
+    }
+    if (masuk.length) {
+      html += \`<div>
+        <div class="kat-group-title in">📈 Pemasukan</div>
+        \${masuk.map(r => {
+          const persen = totalMasuk > 0 ? Math.round((r.total / totalMasuk) * 100) : 0;
+          const icon = KAT_ICON[r.category] || '📌';
+          return \`<div class="kat-row">
+            <div class="kat-row-top">
+              <span class="kat-name">\${icon} \${r.category}</span>
+              <span class="kat-amount">\${formatRp(r.total)}</span>
+            </div>
+            <div class="kat-bar-bg"><div class="kat-bar-fill in" style="width:\${persen}%"></div></div>
+            <div class="kat-count">\${r.jumlah}x · \${persen}%</div>
+          </div>\`;
+        }).join('')}
+      </div>\`;
+    }
+    el.innerHTML = html;
+  }
+ 
   function renderTransactions(recent) {
     const el = document.getElementById('txn-list');
     if (!recent.length) {
@@ -493,6 +594,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       document.getElementById('stat-masuk').textContent  = formatRp(data.total_masuk);
       document.getElementById('stat-keluar').textContent = formatRp(data.total_keluar);
       renderChart(data.chartData);
+      renderKategori(data.kategori || []);
       renderGoals(data.goals);
       renderTransactions(data.recent);
     } catch (err) {
