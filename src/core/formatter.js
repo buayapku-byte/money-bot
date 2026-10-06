@@ -24,12 +24,15 @@ function formatTanggal(dateStr) {
 }
  
 /**
- * Format datetime ke HH:MM DD/MM/YYYY
+ * Format datetime ke "Selasa, 6 Oktober 2026 · 15:29"
  */
 function formatDatetime(datetimeStr) {
   const d = new Date(datetimeStr);
   const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(d.getHours())}:${pad(d.getMinutes())} ${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()}`;
+  const tanggal = d.toLocaleDateString('id-ID', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return `${tanggal} · ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
  
 /**
@@ -180,7 +183,7 @@ function toUsd(idr, usdRate) {
   const rate = usdRate || 15750;
   return '$' + (idr / rate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
- 
+
 /**
  * Format daftar goals — dengan konversi USD opsional
  * @param {Array} goals
@@ -189,11 +192,11 @@ function toUsd(idr, usdRate) {
  */
 function formatGoals(goals, getGoalProgress, usdRate = null) {
   if (!goals.length) return '🎯 Belum ada target tabungan.\n\nGunakan `/target buat NamaGoal 1000000` untuk mulai.';
- 
+
   const rateLabel = usdRate
     ? `_Kurs: 1 USD = ${formatRupiah(Math.round(usdRate))}_`
     : `_Kurs: 1 USD = ${formatRupiah(15750)} (default)_`;
- 
+
   let msg = `🎯 *Target Tabungan*\n${rateLabel}\n\n`;
   goals.forEach((g, i) => {
     const { persen, sisaHari } = getGoalProgress(g);
@@ -207,7 +210,7 @@ function formatGoals(goals, getGoalProgress, usdRate = null) {
     }
     msg += '\n';
   });
- 
+
   return msg.trim();
 }
  
@@ -282,28 +285,28 @@ function formatRecurring(list, prefix = '/') {
 function formatAnalisis(data) {
   const { masukIni, keluarIni, savingsRate, trenKeluar, hariBoros,
     perKategori, hariUnik, rataHari, jumlahTransaksi, bulan } = data;
- 
+
   const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
     'Juli','Agustus','September','Oktober','November','Desember'];
   const [year, month] = bulan.split('-');
   const bulanLabel = `${NAMA_BULAN[parseInt(month) - 1]} ${year}`;
- 
+
   let msg = `🧠 *Analisis Keuangan — ${bulanLabel}*\n\n`;
- 
+
   msg += `💰 Pemasukan:   *${formatRupiah(masukIni)}*\n`;
   msg += `💸 Pengeluaran: *${formatRupiah(keluarIni)}*\n`;
   msg += `📊 Savings Rate: *${savingsRate}%*  ${savingsRate >= 30 ? '🟢' : savingsRate >= 10 ? '🟡' : '🔴'}\n`;
- 
+
   if (trenKeluar !== null) {
     const icon  = trenKeluar > 0 ? '📈' : '📉';
     const label = trenKeluar > 0 ? `naik ${trenKeluar}%` : `turun ${Math.abs(trenKeluar)}%`;
     msg += `${icon} Pengeluaran vs bulan lalu: *${label}*\n`;
   }
- 
+
   msg += `\n📋 *${jumlahTransaksi} transaksi* dalam ${hariUnik} hari aktif\n`;
   if (rataHari > 0) msg += `📌 Rata-rata pengeluaran/hari: *${formatRupiah(rataHari)}*\n`;
   if (hariBoros)    msg += `📅 Hari paling boros: *${hariBoros}*\n`;
- 
+
   if (perKategori.length > 0) {
     msg += `\n📊 *Top Pengeluaran:*\n`;
     perKategori.slice(0, 5).forEach((k, i) => {
@@ -311,7 +314,7 @@ function formatAnalisis(data) {
       msg += `${i + 1}. *${k.category}* — ${formatRupiah(k.total)} (${persen}%) · ${k.jumlah}x\n`;
     });
   }
- 
+
   msg += `\n💡 *Saran:*\n`;
   if (savingsRate < 0) {
     msg += `🚨 Pengeluaran melebihi pemasukan! Segera kurangi pengeluaran.\n`;
@@ -322,13 +325,13 @@ function formatAnalisis(data) {
   } else {
     msg += `✅ Savings rate ${savingsRate}% — sudah bagus!\n`;
   }
- 
+
   if (trenKeluar !== null && trenKeluar >= 30) {
     msg += `⚠️ Pengeluaran naik *${trenKeluar}%* dari bulan lalu — perlu diwaspadai.\n`;
   } else if (trenKeluar !== null && trenKeluar <= -20) {
     msg += `🎉 Berhasil hemat *${Math.abs(trenKeluar)}%* dibanding bulan lalu!\n`;
   }
- 
+
   if (perKategori.length > 0) {
     const top = perKategori[0];
     const persen = keluarIni > 0 ? Math.round((top.total / keluarIni) * 100) : 0;
@@ -336,36 +339,36 @@ function formatAnalisis(data) {
       msg += `💡 *${top.category}* makan ${persen}% budget — coba batasi dengan /budget.\n`;
     }
   }
- 
+
   return msg.trim();
 }
- 
+
 /**
  * Format snapshot net worth / kekayaan
  */
 function formatKekayaan(data) {
   const { saldo, totalTabungan, totalKekayaan, goals, usdRate } = data;
- 
+
   const toUsdStr = (idr) => {
     const rate = usdRate || 15750;
     return '$' + Math.round(idr / rate).toLocaleString('en-US');
   };
- 
+
   const rateLabel = usdRate
     ? `_Kurs: 1 USD = ${formatRupiah(Math.round(usdRate))}_`
     : `_Kurs: 1 USD = ${formatRupiah(15750)} (default)_`;
- 
+
   const tanggal = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
- 
+
   let msg = `💎 *Net Worth Snapshot*\n${rateLabel}\n\n`;
- 
+
   msg += `💰 Saldo Aktif:   *${formatRupiah(saldo)}* _(${toUsdStr(saldo)})_\n`;
   msg += `🎯 Total Tabungan: *${formatRupiah(totalTabungan)}* _(${toUsdStr(totalTabungan)})_\n`;
   msg += `─────────────────\n`;
- 
+
   const netSign = totalKekayaan >= 0 ? '💎' : '⚠️';
   msg += `${netSign} *Net Worth: ${formatRupiah(totalKekayaan)}* _(${toUsdStr(totalKekayaan)})_\n`;
- 
+
   if (goals.length > 0) {
     msg += `\n📊 *Rincian Goals:*\n`;
     goals.forEach(g => {
@@ -374,11 +377,11 @@ function formatKekayaan(data) {
       msg += `${status} *${g.name}*: ${formatRupiah(g.current_amount)} _(${persen}%)_\n`;
     });
   }
- 
+
   msg += `\n_Snapshot per ${tanggal}_`;
   return msg.trim();
 }
- 
+
 module.exports = {
   formatRupiah,
   formatTanggal,
