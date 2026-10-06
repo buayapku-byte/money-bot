@@ -254,11 +254,12 @@ function createTelegramBot() {
       const args = ctx.message.text.split(/\s+/).slice(1);
       const sub = args[0]?.toLowerCase();
  
-      if (!sub || !['lihat', 'buat', 'hapus'].includes(sub)) {
+      if (!sub || !['lihat', 'buat', 'hapus', 'setor'].includes(sub)) {
         return replyError(ctx,
           `Subcommand tidak valid.\nGunakan:\n` +
           `\`/target lihat\`\n` +
           `\`/target buat NamaGoal Jumlah [deadline]\`\n` +
+          `\`/target setor NamaGoal Jumlah\`\n` +
           `\`/target hapus NamaGoal\``
         );
       }
@@ -282,6 +283,33 @@ function createTelegramBot() {
           `🎯 ${deleted.name}\n` +
           `Dana terkumpul: ${formatRupiah(deleted.current_amount)}`
         );
+      }
+ 
+      // /target setor NamaGoal Jumlah — last arg = jumlah, rest = nama goal
+      if (sub === 'setor') {
+        const amountRaw = args[args.length - 1];
+        const amount = parseJumlah(amountRaw);
+        if (!amount || amount <= 0 || args.length < 3) {
+          return replyError(ctx,
+            `Format salah!\nContoh: \`/target setor Liburan Bali 500rb\``
+          );
+        }
+        const goalName = args.slice(1, args.length - 1).join(' ');
+        if (!goalName) return replyError(ctx, 'Ketik nama goal.\nContoh: `/target setor Liburan 500rb`');
+ 
+        const { goal, isCompleted } = addToGoal(wallet.id, goalName, amount);
+        const { persen } = getGoalProgress(goal);
+        let text = `✅ *Setor berhasil!*\n\n`;
+        text += `🎯 *${goal.name}*\n`;
+        text += `Disetor: *${formatRupiah(amount)}*\n`;
+        text += `Terkumpul: ${formatRupiah(goal.current_amount)} / ${formatRupiah(goal.target_amount)}\n`;
+        text += `Progress: ${persen}%\n`;
+        if (isCompleted) {
+          text += `\n🎉 *GOAL TERCAPAI! Selamat!* 🎉`;
+        } else {
+          text += `Sisa: ${formatRupiah(goal.target_amount - goal.current_amount)}`;
+        }
+        return replyMd(ctx, text);
       }
  
       // /target buat NamaGoal Jumlah [deadline YYYY-MM-DD]

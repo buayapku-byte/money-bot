@@ -4,7 +4,7 @@
  
 const cron = require('node-cron');
 const { getDb } = require('./database');
-const { getSaldo, processRecurring } = require('./finance');
+const { getSaldo, processRecurring, getWeeklyAnalysis } = require('./finance');
 const { getGoals, getGoalProgress } = require('./goals');
 const { formatRupiah, progressBar } = require('./formatter');
  
@@ -26,6 +26,7 @@ function initReminders(tgBot, sock) {
  
   scheduleAllReminders();
   scheduleRecurringProcessor();
+  scheduleWeeklyTips();
   console.log('✅ Reminder scheduler aktif');
 }
  
@@ -204,6 +205,58 @@ function scheduleRecurringProcessor() {
   });
  
   console.log('[Recurring] Cron processor dijadwalkan (00:05 WIB tiap hari)');
+}
+ 
+/**
+ * Jadwalkan weekly tips — setiap Senin jam 08:00 WIB
+ */
+function scheduleWeeklyTips() {
+  cron.schedule('0 8 * * 1', async () => {
+    console.log('[WeeklyTips] Mulai kirim analisis mingguan...');
+    const db = getDb();
+    try {
+      const wallets = db.prepare(`SELECT * FROM wallets`).all();
+ 
+      for (const wallet of wallets) {
+        try {
+          const { tips, thisWeekTotal, lastWeekTotal, thisWeekIncome } = getWeeklyAnalysis(wallet.id);
+ 
+          if (thisWeekTotal === 0 && thisWeekIncome === 0) continue; // skip wallet kosong
+ 
+          let msg = `💡 *Tips Mingguan*\n\n`;
+          msg += `📊 Ringkasan 7 hari terakhir:\n`;
+          msg += `• Pengeluaran: *${formatRupiah(thisWeekTotal)}*`;
+          if (lastWeekTotal > 0) {
+            const diff = Math.round(((thisWeekTotal - lastWeekTotal) / lastWeekTotal) * 100);
+            const icon = diff > 0 ? '⬆️' : '⬇️';
+            msg += ` (${icon}${Math.abs(diff)}% vs minggu lalu)`;
+          }
+          msg += `\n`;
+          if (thisWeekIncome > 0) {
+            msg += `• Pemasukan: *${formatRupiah(thisWeekIncome)}*\n`;
+          }
+          msg += `\n`;
+          tips.forEach(t => { msg += `${t}\n`; });
+          msg += `\nSemangat ngatur keuangan! 🔥`;
+ 
+          if (wallet.platform === 'telegram' && telegramBot) {
+            const chatId = wallet.id.replace('tg:', '');
+            await telegramBot.telegram.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+          } else if (wallet.platform === 'whatsapp' && waSock) {
+            const chatId = wallet.id.replace('wa:', '');
+            const plainMsg = msg.replace(/\*/g, '').replace(/_/g, '');
+            await waSock.sendMessage(chatId, { text: plainMsg });
+          }
+        } catch (err) {
+          console.error(`[WeeklyTips] Gagal kirim ke ${wallet.id}:`, err.message);
+        }
+      }
+    } catch (err) {
+      console.error('[WeeklyTips] Error:', err.message);
+    }
+  }, { timezone: 'Asia/Jakarta' });
+ 
+  console.log('[WeeklyTips] Cron dijadwalkan (Senin 08:00 WIB)');
 }
  
 module.exports = { initReminders, setReminder, disableReminder };

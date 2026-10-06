@@ -259,11 +259,12 @@ async function handleTarget(sock, msg, args) {
   const prefix = config.wa.prefix;
   const sub = args[0]?.toLowerCase();
  
-  if (!sub || !['lihat', 'buat', 'hapus'].includes(sub)) {
+  if (!sub || !['lihat', 'buat', 'hapus', 'setor'].includes(sub)) {
     return reply(sock, msg,
       `❌ Subcommand tidak valid.\nGunakan:\n` +
       `${prefix}target lihat\n` +
       `${prefix}target buat NamaGoal Jumlah [deadline]\n` +
+      `${prefix}target setor NamaGoal Jumlah\n` +
       `${prefix}target hapus NamaGoal`
     );
   }
@@ -285,6 +286,33 @@ async function handleTarget(sock, msg, args) {
         `🎯 ${deleted.name}\n` +
         `Dana terkumpul: ${formatRupiah(deleted.current_amount)}`
       );
+    }
+ 
+    if (sub === 'setor') {
+      // !target setor NamaGoal Jumlah  — last arg = jumlah, rest = nama goal
+      const amountRaw = args[args.length - 1];
+      const amount = parseJumlah(amountRaw);
+      if (!amount || amount <= 0 || args.length < 3) {
+        return reply(sock, msg,
+          `❌ Format salah!\nContoh: ${prefix}target setor Liburan Bali 500rb`
+        );
+      }
+      const goalName = args.slice(1, args.length - 1).join(' ');
+      if (!goalName) return reply(sock, msg, `❌ Ketik nama goal.\nContoh: ${prefix}target setor Liburan 500rb`);
+ 
+      const { goal, isCompleted } = addToGoal(wallet.id, goalName, amount);
+      const { persen } = getGoalProgress(goal);
+      let text = `✅ *Setor berhasil!*\n\n`;
+      text += `🎯 *${goal.name}*\n`;
+      text += `Disetor: *${formatRupiah(amount)}*\n`;
+      text += `Terkumpul: ${formatRupiah(goal.current_amount)} / ${formatRupiah(goal.target_amount)}\n`;
+      text += `Progress: ${persen}%\n`;
+      if (isCompleted) {
+        text += `\n🎉 *GOAL TERCAPAI! Selamat!* 🎉`;
+      } else {
+        text += `Sisa: ${formatRupiah(goal.target_amount - goal.current_amount)}`;
+      }
+      return reply(sock, msg, text);
     }
  
     if (sub === 'buat') {

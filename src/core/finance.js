@@ -371,9 +371,116 @@ function processRecurring() {
   return results;
 }
  
+/**
+ * Analisis pengeluaran mingguan — bandingkan minggu ini vs minggu lalu
+ * Dipakai untuk Tips Otomatis
+ * @param {string} walletId
+ * @returns {{ tips: string[], thisWeekTotal: number, lastWeekTotal: number, byCategory: Array }}
+ */
+function getWeeklyAnalysis(walletId) {
+  const db = getDb();
+ 
+  // Pengeluaran 7 hari terakhir per kategori
+  const thisWeek = db.prepare(`
+    SELECT category, SUM(amount) AS total, COUNT(*) AS jumlah
+    FROM transactions
+    WHERE wallet_id = ? AND type = 'out'
+      AND date >= date('now', 'localtime', '-6 days')
+    GROUP BY category
+    ORDER BY total DESC
+  `).all(walletId);
+ 
+  // Pengeluaran 7-14 hari lalu per kategori
+  const lastWeek = db.prepare(`
+    SELECT category, SUM(amount) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND type = 'out'
+      AND date >= date('now', 'localtime', '-13 days')
+      AND date <  date('now', 'localtime', '-6 days')
+    GROUP BY category
+  `).all(walletId);
+ 
+  // Total pemasukan minggu ini
+  const incomeRow = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND type = 'in'
+      AND date >= date('now', 'localtime', '-6 days')
+  `).get(walletId);
+ 
+  const lastWeekMap = {};
+  lastWeek.forEach(r => { lastWeekMap[r.category] = r.total; });
+ 
+  const thisWeekTotal = thisWeek.reduce((s, r) => s + r.total, 0);
+  const lastWeekTotal = lastWeek.reduce((s, r) => s + r.total, 0);
+  const thisWeekIncome = incomeRow.total;
+ 
+  const tips = [];
+ 
+  // Tip 1: Kategori boros vs minggu lalu
+  thisWeek.forEach(r => {
+    const prev = lastWeekMap[r.category] || 0;
+    if (prev > 0) {
+      const selisihPersen = Math.round(((r.total - prev) / prev) * 100);
+      if (selisihPersen >= 30) {
+        tips.push(`📌 Minggu ini kamu boros di *${r.category}* ${selisihPersen}% lebih dari minggu lalu (${formatRupiah(prev)} → ${formatRupiah(r.total)})`);
+      }
+    } else if (r.jumlah >= 3) {
+      tips.push(`📌 Pengeluaran *${r.category}* cukup sering minggu ini (${r.jumlah}x, total ${formatRupiah(r.total)})`);
+    }
+  });
+ 
+  // Tip 2: Total pengeluaran vs minggu lalu
+  if (lastWeekTotal > 0) {
+    const diff = Math.round(((thisWeekTotal - lastWeekTotal) / lastWeekTotal) * 100);
+    if (diff >= 20) {
+      tips.push(`⚠️ Total pengeluaran minggu ini *naik ${diff}%* dibanding minggu lalu`);
+    } else if (diff <= -20) {
+      tips.push(`✅ Keren! Pengeluaran minggu ini *turun ${Math.abs(diff)}%* dibanding minggu lalu`);
+    }
+  }
+ 
+  // Tip 3: Rasio pengeluaran vs pemasukan
+  if (thisWeekIncome > 0) {
+    const ratio = Math.round((thisWeekTotal / thisWeekIncome) * 100);
+    if (ratio >= 90) {
+      tips.push(`🚨 Pengeluaran minggu ini *${ratio}%* dari pemasukanmu — hampir habis!`);
+    } else if (ratio >= 70) {
+      tips.push(`⚠️ Pengeluaran minggu ini sudah *${ratio}%* dari pemasukanmu`);
+    } else if (ratio <= 40 && thisWeekTotal > 0) {
+      tips.push(`💪 Pengeluaran minggu ini hanya *${ratio}%* dari pemasukan — nabungnya bagus!`);
+    }
+  }
+ 
+  // Tip 4: Kategori terbesar
+  if (thisWeek.length > 0) {
+    const top = thisWeek[0];
+    const persen = thisWeekTotal > 0 ? Math.round((top.total / thisWeekTotal) * 100) : 0;
+    if (persen >= 50) {
+      tips.push(`💡 *${top.category}* menyumbang *${persen}%* dari total pengeluaranmu minggu ini`);
+    }
+  }
+ 
+  if (!tips.length) {
+    if (thisWeekTotal === 0) {
+      tips.push('😮 Tidak ada pengeluaran minggu ini — atau belum dicatat?');
+    } else {
+      tips.push('👍 Pengeluaran minggu ini terbilang normal, tidak ada yang mencolok.');
+    }
+  }
+ 
+  return { tips, thisWeekTotal, lastWeekTotal, thisWeekIncome, byCategory: thisWeek };
+}
+ 
+// helper format di sini supaya tidak circular import
+function formatRupiah(amount) {
+  return 'Rp ' + Math.round(amount).toLocaleString('id-ID');
+}
+ 
 module.exports = {
   addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
   editTransaction,
   addRecurring, getRecurring, deleteRecurring, processRecurring,
+  getWeeklyAnalysis,
 };
