@@ -142,6 +142,28 @@ function createTables() {
       created_at  TEXT DEFAULT (datetime('now', 'localtime')),
       FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
     );
+ 
+    -- ─────────────────────────────────────────────────────
+    -- Live Rates: kurs real-time dari API (global, bukan per wallet)
+    -- ─────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS live_rates (
+      code          TEXT PRIMARY KEY,
+      rate_to_idr   REAL NOT NULL,
+      updated_at    TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+ 
+    -- ─────────────────────────────────────────────────────
+    -- Currencies: kurs custom per wallet (override live_rates)
+    -- ─────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS currencies (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_id     TEXT NOT NULL,
+      code          TEXT NOT NULL,
+      rate_to_idr   REAL NOT NULL,
+      updated_at    TEXT DEFAULT (datetime('now', 'localtime')),
+      UNIQUE(wallet_id, code),
+      FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
+    );
   `);
 }
  
