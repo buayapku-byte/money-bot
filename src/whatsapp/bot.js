@@ -11,12 +11,13 @@ const pino = require('pino');
 const fs = require('fs');
  
 const config = require('../../config');
-const { getOrCreateWallet } = require('../core/database');
+const { getOrCreateWallet, resolveWalletId, createInviteCode, useInviteCode, unlinkWallet } = require('../core/database');
 const { setQR, clearQR } = require('../core/qr-server');
 const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
   editTransaction,
-  addRecurring, getRecurring, deleteRecurring } = require('../core/finance');
+  addRecurring, getRecurring, deleteRecurring,
+  setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -64,10 +65,16 @@ function stripForWA(text) {
 }
  
 /**
- * Ambil wallet dari pesan WA
+ * Ambil wallet dari pesan WA — auto-resolve ke primary kalau linked
  */
 function getWallet(chatId, chatName = '') {
-  return getOrCreateWallet('whatsapp', chatId, chatName);
+  const wallet = getOrCreateWallet('whatsapp', chatId, chatName);
+  const primaryId = resolveWalletId(wallet.id);
+  if (primaryId !== wallet.id) {
+    const { getDb } = require('../core/database');
+    return getDb().prepare('SELECT * FROM wallets WHERE id = ?').get(primaryId) || wallet;
+  }
+  return wallet;
 }
  
 /**
@@ -131,6 +138,14 @@ async function handleHelp(sock, msg) {
     `⏰ *Reminder*\n` +
     `${prefix}reminder 20:00 — aktifkan notif harian\n` +
     `${prefix}reminder off — matikan notif\n\n` +
+    `🔗 *Share Wallet*\n` +
+    `${prefix}wallet share — buat kode undangan\n` +
+    `${prefix}wallet gabung KODE — gabung ke wallet orang\n` +
+    `${prefix}wallet pisah — berhenti berbagi\n\n` +
+    `💱 *Multi-Kurs*\n` +
+    `${prefix}kurs — lihat kurs aktif\n` +
+    `${prefix}kurs set THB 435 — set 1 THB = 435 IDR\n` +
+    `${prefix}catat keluar 500THB makan — auto-konversi\n\n` +
     `_Shorthand: 500rb · 1.5jt · 1k_`
   );
 }
@@ -138,21 +153,44 @@ async function handleHelp(sock, msg) {
 async function handleCatat(sock, msg, args, senderName) {
   const chatId = msg.key.remoteJid;
   const typeRaw = args[0]?.toLowerCase();
-  const amountRaw = args[1];
+  let amountRaw = args[1];
   const note = args.slice(2).join(' ') || '';
  
   if (!typeRaw || !['masuk', 'keluar', 'in', 'out'].includes(typeRaw)) {
     return reply(sock, msg,
       `❌ Format salah!\nContoh:\n` +
       `${config.wa.prefix}catat masuk 500rb gaji\n` +
-      `${config.wa.prefix}catat keluar 50rb makan`
+      `${config.wa.prefix}catat keluar 50rb makan\n` +
+      `${config.wa.prefix}catat keluar 500THB makan (mata uang lain)`
     );
   }
  
-  const amount = parseJumlah(amountRaw);
-  if (!amount || amount <= 0) {
+  // Deteksi currency suffix: 500THB, 100USD, 50MYR, dll.
+  let finalAmount = null;
+  let currencyNote = '';
+  const currencyMatch = amountRaw?.match(/^(\d+(?:[.,]\d+)?(?:rb|jt|k|m)?)(THB|MYR|USD|SGD|EUR)$/i);
+  if (currencyMatch) {
+    const rawNum = currencyMatch[1];
+    const currCode = currencyMatch[2].toUpperCase();
+    const numVal = parseJumlah(rawNum);
+    if (numVal && numVal > 0) {
+      try {
+        const chatName = msg.key.remoteJid.endsWith('@g.us') ? '' : senderName;
+        const walletTmp = getWallet(chatId, chatName);
+        const converted = convertToIdr(walletTmp.id, numVal, currCode);
+        finalAmount = converted;
+        currencyNote = ` (${numVal} ${currCode} → ${formatRupiah(converted)})`;
+      } catch (e) {
+        return reply(sock, msg, `❌ ${e.message}`);
+      }
+    }
+  } else {
+    finalAmount = parseJumlah(amountRaw);
+  }
+ 
+  if (!finalAmount || finalAmount <= 0) {
     return reply(sock, msg,
-      `❌ Jumlah tidak valid: *${amountRaw}*\nContoh: 500000 · 500rb · 1.5jt · 1k`
+      `❌ Jumlah tidak valid: *${amountRaw}*\nContoh: 500000 · 500rb · 1.5jt · 500THB`
     );
   }
  
@@ -163,7 +201,8 @@ async function handleCatat(sock, msg, args, senderName) {
       ? '' // nama group diambil saat socket ready, skip dulu
       : senderName;
     const wallet = getWallet(chatId, chatName);
-    const trx = addTransaction(wallet.id, type, amount, note, 'umum', senderName);
+    const fullNote = (note + currencyNote).trim();
+    const trx = addTransaction(wallet.id, type, finalAmount, fullNote, 'umum', senderName);
     const { saldo } = getSaldo(wallet.id);
  
     let replyText = formatTransaksi(trx) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`;
@@ -637,6 +676,120 @@ async function handleEdit(sock, msg, args) {
   }
 }
  
+async function handleWallet(sock, msg, args) {
+  const prefix = config.wa.prefix;
+  const sub = args[0]?.toLowerCase();
+  const chatId = msg.key.remoteJid;
+  const myWallet = getOrCreateWallet('whatsapp', chatId);
+ 
+  try {
+    if (sub === 'share' || sub === 'bagikan') {
+      const code = createInviteCode(myWallet.id);
+      return reply(sock, msg,
+        `🔗 *Kode Share Wallet*\n\n` +
+        `Kode: *${code}*\n` +
+        `Berlaku: 24 jam\n\n` +
+        `Kirim ke orang yang mau bergabung:\n` +
+        `\`${prefix}wallet gabung ${code}\``
+      );
+    }
+ 
+    if (sub === 'gabung') {
+      const code = args[1];
+      if (!code) return reply(sock, msg, `❌ Ketik kode undangan.\nContoh: ${prefix}wallet gabung ABC123`);
+      const primary = useInviteCode(myWallet.id, code);
+      return reply(sock, msg,
+        `✅ *Berhasil bergabung!*\n\n` +
+        `Sekarang kamu mengakses wallet: *${primary.name || primary.id}*\n` +
+        `Semua transaksi akan dicatat ke wallet tersebut.\n\n` +
+        `Gunakan \`${prefix}wallet pisah\` untuk berhenti berbagi.`
+      );
+    }
+ 
+    if (sub === 'pisah') {
+      const link = unlinkWallet(myWallet.id);
+      return reply(sock, msg,
+        `✅ *Wallet dipisah!*\n\nKamu sekarang kembali menggunakan wallet sendiri.`
+      );
+    }
+ 
+    if (sub === 'info') {
+      const { getDb } = require('../core/database');
+      const link = getDb().prepare('SELECT * FROM wallet_links WHERE member_id = ?').get(myWallet.id);
+      if (link) {
+        const primary = getDb().prepare('SELECT * FROM wallets WHERE id = ?').get(link.primary_id);
+        return reply(sock, msg,
+          `🔗 *Status Wallet*\n\n` +
+          `Kamu sedang berbagi wallet dengan:\n*${primary?.name || link.primary_id}*\n\n` +
+          `Gunakan \`${prefix}wallet pisah\` untuk berhenti.`
+        );
+      }
+      return reply(sock, msg,
+        `👛 *Status Wallet*\n\nKamu menggunakan wallet sendiri.\n\n` +
+        `Bagikan ke orang lain: \`${prefix}wallet share\``
+      );
+    }
+ 
+    return reply(sock, msg,
+      `❓ Subcommand wallet:\n` +
+      `${prefix}wallet share — buat kode undangan\n` +
+      `${prefix}wallet gabung KODE — gabung ke wallet orang lain\n` +
+      `${prefix}wallet pisah — berhenti berbagi\n` +
+      `${prefix}wallet info — cek status`
+    );
+  } catch (err) {
+    reply(sock, msg, `❌ ${err.message}`);
+  }
+}
+ 
+async function handleKurs(sock, msg, args) {
+  const prefix = config.wa.prefix;
+  const sub = args[0]?.toLowerCase();
+  const wallet = getWallet(msg.key.remoteJid);
+ 
+  try {
+    if (!sub || sub === 'lihat') {
+      const list = getCurrencies(wallet.id);
+      const defaults = Object.entries(CURRENCY_SYMBOLS)
+        .filter(([k]) => k !== 'IDR')
+        .map(([code]) => {
+          const custom = list.find(r => r.code === code);
+          const { DEFAULT_RATES } = require('../core/finance');
+          // just show what's saved
+          return custom ? `• ${code}: 1 ${code} = Rp ${custom.rate_to_idr.toLocaleString('id-ID')} *(custom)*` : null;
+        }).filter(Boolean);
+ 
+      let msg2 = `💱 *Kurs Aktif*\n\n`;
+      if (!list.length) {
+        msg2 += `Belum ada kurs custom.\nDefault bawaan:\n• THB: 1 THB ≈ Rp 430\n• MYR: 1 MYR ≈ Rp 3.500\n• USD: 1 USD ≈ Rp 16.000\n• SGD: 1 SGD ≈ Rp 12.000\n\n`;
+      } else {
+        list.forEach(r => {
+          msg2 += `• ${r.code}: 1 ${r.code} = Rp ${r.rate_to_idr.toLocaleString('id-ID')}\n`;
+        });
+      }
+      msg2 += `\nSet kurs: \`${prefix}kurs set THB 435\``;
+      return reply(sock, msg, msg2);
+    }
+ 
+    if (sub === 'set') {
+      const code = args[1]?.toUpperCase();
+      const rate = parseFloat(args[2]);
+      if (!code || !rate || rate <= 0) {
+        return reply(sock, msg, `❌ Format: ${prefix}kurs set THB 435\n(1 THB = 435 IDR)`);
+      }
+      const result = setCurrency(wallet.id, code, rate);
+      return reply(sock, msg,
+        `✅ *Kurs disimpan!*\n\n1 ${result.code} = Rp ${rate.toLocaleString('id-ID')}\n\n` +
+        `Sekarang bisa catat: \`${prefix}catat keluar 500THB makan\``
+      );
+    }
+ 
+    return reply(sock, msg, `❓ Gunakan:\n${prefix}kurs — lihat kurs\n${prefix}kurs set THB 435 — set kurs`);
+  } catch (err) {
+    reply(sock, msg, `❌ ${err.message}`);
+  }
+}
+ 
 // ─── Router ───────────────────────────────────────────────
  
 /**
@@ -708,6 +861,14 @@ async function routeMessage(sock, msg, text, senderName) {
  
     case 'edit':
       return handleEdit(sock, msg, args);
+ 
+    case 'wallet':
+    case 'share':
+      return handleWallet(sock, msg, args);
+ 
+    case 'kurs':
+    case 'currency':
+      return handleKurs(sock, msg, args);
  
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
