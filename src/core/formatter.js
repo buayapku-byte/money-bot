@@ -170,15 +170,37 @@ function formatKategori(rows, period) {
 /**
  * Format daftar goals
  */
-function formatGoals(goals, getGoalProgress) {
+/**
+ * Konversi IDR ke USD — pakai rate atau default 15750
+ * @param {number} idr
+ * @param {number|null} usdRate - 1 USD = X IDR
+ * @returns {string} e.g. "$12.34"
+ */
+function toUsd(idr, usdRate) {
+  const rate = usdRate || 15750;
+  return '$' + (idr / rate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+ 
+/**
+ * Format daftar goals — dengan konversi USD opsional
+ * @param {Array} goals
+ * @param {Function} getGoalProgress
+ * @param {number|null} usdRate - 1 USD = X IDR (dari live_rates, null = pakai default)
+ */
+function formatGoals(goals, getGoalProgress, usdRate = null) {
   if (!goals.length) return '🎯 Belum ada target tabungan.\n\nGunakan `/target buat NamaGoal 1000000` untuk mulai.';
  
-  let msg = `🎯 *Target Tabungan*\n\n`;
+  const rateLabel = usdRate
+    ? `_Kurs: 1 USD = ${formatRupiah(Math.round(usdRate))}_`
+    : `_Kurs: 1 USD = ${formatRupiah(15750)} (default)_`;
+ 
+  let msg = `🎯 *Target Tabungan*\n${rateLabel}\n\n`;
   goals.forEach((g, i) => {
     const { persen, sisaHari } = getGoalProgress(g);
     msg += `*${i + 1}. ${g.name}*\n`;
     msg += `   ${progressBar(persen)}\n`;
-    msg += `   ${formatRupiah(g.current_amount)} / ${formatRupiah(g.target_amount)}\n`;
+    msg += `   ${formatRupiah(g.current_amount)} _(${toUsd(g.current_amount, usdRate)})_\n`;
+    msg += `   Target: ${formatRupiah(g.target_amount)} _(${toUsd(g.target_amount, usdRate)})_\n`;
     if (sisaHari !== null) {
       const sisaLabel = sisaHari > 0 ? `${sisaHari} hari lagi` : sisaHari === 0 ? 'Hari ini!' : `Terlewat ${Math.abs(sisaHari)} hari`;
       msg += `   ⏰ ${sisaLabel} _(${g.deadline})_\n`;

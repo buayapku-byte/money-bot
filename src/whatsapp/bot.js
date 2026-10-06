@@ -333,7 +333,14 @@ async function handleTarget(sock, msg, args) {
  
     if (sub === 'lihat') {
       const goals = getGoals(wallet.id);
-      return reply(sock, msg, formatGoals(goals, getGoalProgress));
+      // Ambil kurs USD live, fallback ke null (formatter pakai default 15750)
+      let usdRate = null;
+      try {
+        const { getDb } = require('../core/database');
+        const usdRow = getDb().prepare('SELECT rate_to_idr FROM live_rates WHERE code = ?').get('USD');
+        if (usdRow) usdRate = usdRow.rate_to_idr;
+      } catch (_) {}
+      return reply(sock, msg, formatGoals(goals, getGoalProgress, usdRate));
     }
  
     if (sub === 'hapus') {
