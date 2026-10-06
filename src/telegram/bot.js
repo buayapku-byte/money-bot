@@ -5,7 +5,8 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
   editTransaction,
   addRecurring, getRecurring, deleteRecurring,
-  setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS } = require('../core/finance');
+  setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
+  fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -123,9 +124,11 @@ function createTelegramBot() {
       `\`/wallet share\` — buat kode undangan\n` +
       `\`/wallet gabung KODE\` — gabung ke wallet orang\n` +
       `\`/wallet pisah\` — berhenti berbagi\n\n` +
-      `💱 *Multi-Kurs*\n` +
-      `\`/kurs\` — lihat kurs aktif\n` +
-      `\`/kurs set THB 435\` — set 1 THB = 435 IDR\n` +
+      `💱 *Multi-Kurs (160+ mata uang)*\n` +
+      `\`/kurs\` — lihat kurs populer (live)\n` +
+      `\`/kurs JPY\` — cek kurs mata uang spesifik\n` +
+      `\`/kurs set THB 435\` — set kurs manual\n` +
+      `\`/kurs update\` — refresh dari server\n` +
       `\`/catat keluar 500THB makan\` — auto-konversi ke IDR\n`
     );
   });
@@ -151,7 +154,7 @@ function createTelegramBot() {
       // Deteksi currency suffix: 500THB, 100USD, 50MYR, dll.
       let finalAmount = null;
       let currencyNote = '';
-      const currencyMatch = amountRaw?.match(/^(\d+(?:[.,]\d+)?(?:rb|jt|k|m)?)(THB|MYR|USD|SGD|EUR)$/i);
+      const currencyMatch = amountRaw?.match(/^(\d+(?:[.,]\d+)?(?:rb|jt|k|m)?)([A-Z]{2,6})$/i);
       if (currencyMatch) {
         const rawNum = currencyMatch[1];
         const currCode = currencyMatch[2].toUpperCase();
@@ -754,32 +757,30 @@ function createTelegramBot() {
   });
  
   // ─── /kurs ────────────────────────────────────────────
-  // Usage: /kurs | /kurs set THB 435
+  // Usage: /kurs | /kurs JPY | /kurs set THB 435 | /kurs update
   bot.command('kurs', async (ctx) => {
     try {
       const args = ctx.message.text.split(/\s+/).slice(1);
       const sub = args[0]?.toLowerCase();
       const wallet = getWallet(ctx);
  
-      if (!sub || sub === 'lihat') {
-        const list = getCurrencies(wallet.id);
-        let msg = `💱 *Kurs Aktif*\n\n`;
-        if (!list.length) {
-          msg += `Belum ada kurs custom. Default bawaan:\n`;
-          msg += `• THB: 1 THB ≈ Rp 430\n`;
-          msg += `• MYR: 1 MYR ≈ Rp 3.500\n`;
-          msg += `• USD: 1 USD ≈ Rp 16.000\n`;
-          msg += `• SGD: 1 SGD ≈ Rp 12.000\n`;
-          msg += `• EUR: 1 EUR ≈ Rp 17.500\n\n`;
-        } else {
-          list.forEach(r => {
-            msg += `• ${r.code}: 1 ${r.code} = Rp ${r.rate_to_idr.toLocaleString('id-ID')}\n`;
-          });
+      // /kurs update — refresh dari API
+      if (sub === 'update') {
+        await replyMd(ctx, '🔄 Mengambil kurs terbaru dari server...');
+        try {
+          const { count, usdRate } = await fetchLiveRates();
+          return replyMd(ctx,
+            `✅ *Kurs berhasil diperbarui!*\n\n` +
+            `📊 ${count} mata uang tersedia\n` +
+            `💵 1 USD = Rp ${usdRate.toLocaleString('id-ID')}\n\n` +
+            `Cek kurs: \`/kurs\``
+          );
+        } catch (e) {
+          return replyError(ctx, `Gagal update kurs: ${e.message}\nCoba lagi nanti.`);
         }
-        msg += `\nSet kurs: \`/kurs set THB 435\``;
-        return replyMd(ctx, msg);
       }
  
+      // /kurs set CODE RATE — set kurs manual/custom
       if (sub === 'set') {
         const code = args[1]?.toUpperCase();
         const rate = parseFloat(args[2]);
@@ -788,12 +789,74 @@ function createTelegramBot() {
         }
         const result = setCurrency(wallet.id, code, rate);
         return replyMd(ctx,
-          `✅ *Kurs disimpan!*\n\n1 ${result.code} = Rp ${rate.toLocaleString('id-ID')}\n\n` +
-          `Sekarang bisa catat: \`/catat keluar 500THB makan\``
+          `✅ *Kurs custom disimpan!*\n\n1 ${result.code} = Rp ${rate.toLocaleString('id-ID')}\n` +
+          `_(Override live rate — hanya berlaku di wallet ini)_\n\n` +
+          `Contoh pakai: \`/catat keluar 500${result.code} makan\``
         );
       }
  
-      return replyError(ctx, `Gunakan:\n\`/kurs\` — lihat kurs\n\`/kurs set THB 435\` — set kurs`);
+      // /kurs [CODE] — cek kurs mata uang spesifik
+      if (sub && /^[a-z]{2,6}$/.test(sub)) {
+        const code = sub.toUpperCase();
+        const all = getCurrencies(wallet.id);
+        const found = all.find(r => r.code === code);
+        if (!found) {
+          return replyError(ctx,
+            `Kurs *${code}* tidak ditemukan.\n\n` +
+            `Coba: \`/kurs update\` untuk refresh data\n` +
+            `Atau: \`/kurs set ${code} [nilai]\` untuk set manual`
+          );
+        }
+        const label = found.is_custom ? '*(custom)*' : '_(live rate)_';
+        return replyMd(ctx,
+          `💱 *Kurs ${code}*\n\n` +
+          `1 ${code} = Rp ${Math.round(found.rate_to_idr).toLocaleString('id-ID')} ${label}\n\n` +
+          `_Update: ${found.updated_at || '-'}_`
+        );
+      }
+ 
+      // /kurs — tampilkan kurs populer + info
+      const updatedAt = getLiveRateUpdatedAt();
+      const all = getCurrencies(wallet.id);
+      const customMap = new Map(all.filter(r => r.is_custom).map(r => [r.code, r]));
+      const liveMap  = new Map(all.filter(r => !r.is_custom).map(r => [r.code, r]));
+ 
+      let out = `💱 *Kurs Mata Uang*\n`;
+      if (updatedAt) out += `_Update: ${updatedAt} WIB_\n`;
+      out += `\n`;
+ 
+      // Custom rates kalau ada
+      if (customMap.size > 0) {
+        out += `🔧 *Custom (wallet kamu):*\n`;
+        customMap.forEach(r => {
+          out += `• ${r.code}: Rp ${Math.round(r.rate_to_idr).toLocaleString('id-ID')}\n`;
+        });
+        out += `\n`;
+      }
+ 
+      // Kurs populer dari live rates
+      out += `📊 *Kurs Populer (live):*\n`;
+      let shown = 0;
+      for (const code of POPULAR_CURRENCIES) {
+        if (customMap.has(code)) continue;
+        const r = liveMap.get(code);
+        if (r) {
+          out += `• ${code}: Rp ${Math.round(r.rate_to_idr).toLocaleString('id-ID')}\n`;
+          shown++;
+        }
+      }
+ 
+      if (!updatedAt && shown === 0) {
+        out += `_Data live belum tersedia._\n`;
+      }
+ 
+      out += `\n💡 *Perintah lain:*\n`;
+      out += `• \`/kurs JPY\` — cek kurs spesifik\n`;
+      out += `• \`/kurs set THB 435\` — set kurs manual\n`;
+      out += `• \`/kurs update\` — refresh dari server\n`;
+      out += `\n_160+ mata uang tersedia · auto-refresh tiap hari 07:00 WIB_`;
+ 
+      return replyMd(ctx, out);
     } catch (err) {
       console.error('[TG /kurs]', err);
       replyError(ctx, err.message || 'Terjadi error.');

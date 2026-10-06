@@ -2,7 +2,7 @@
 // Semua operasi transaksi & saldo — dipakai Telegram & WA
 // Diisi lengkap di Fase 3
  
-const { getDb } = require('./database');
+const { getDb, resolveWalletId } = require('./database');
  
 // ─── Category Detection ───────────────────────────────────
  
@@ -477,10 +477,125 @@ function formatRupiah(amount) {
   return 'Rp ' + Math.round(amount).toLocaleString('id-ID');
 }
  
+// ─── Multi-Currency ───────────────────────────────────────
+ 
+const CURRENCY_SYMBOLS = { IDR: 'Rp', THB: '฿', MYR: 'RM', USD: '$', SGD: 'S$', EUR: '€', GBP: '£', JPY: '¥', CNY: '¥', AUD: 'A$' };
+// Fallback default rates (dipakai kalau live rates belum tersedia)
+const DEFAULT_RATES = { THB: 450, MYR: 3500, USD: 15750, SGD: 11800, EUR: 17200, GBP: 20500, JPY: 102, CNY: 2200, AUD: 10200 };
+ 
+// Mata uang populer untuk ditampilkan di !kurs
+const POPULAR_CURRENCIES = ['USD', 'EUR', 'GBP', 'SGD', 'MYR', 'THB', 'JPY', 'CNY', 'AUD', 'KRW', 'AED', 'SAR', 'HKD', 'INR', 'PHP', 'VND', 'TWD', 'CAD', 'CHF', 'NZD'];
+ 
+/**
+ * Fetch kurs live dari open.exchangerate-api.com (gratis, tanpa API key)
+ * Simpan ke tabel live_rates
+ */
+async function fetchLiveRates() {
+  const res = await fetch('https://open.exchangerate-api.com/v6/latest/USD');
+  if (!res.ok) throw new Error(`HTTP ${res.status} dari exchange rate API`);
+  const data = await res.json();
+  if (data.result !== 'success') throw new Error('API error: ' + (data['error-type'] || 'unknown'));
+ 
+  const idrPerUsd = data.conversion_rates?.IDR;
+  if (!idrPerUsd) throw new Error('IDR rate tidak ada di response');
+ 
+  const db = getDb();
+  const stmt = db.prepare(`
+    INSERT INTO live_rates (code, rate_to_idr, updated_at)
+    VALUES (?, ?, datetime('now', 'localtime'))
+    ON CONFLICT(code) DO UPDATE SET rate_to_idr = excluded.rate_to_idr, updated_at = excluded.updated_at
+  `);
+ 
+  let count = 0;
+  for (const [code, ratePerUsd] of Object.entries(data.conversion_rates)) {
+    if (code === 'IDR') continue;
+    const rateToIdr = idrPerUsd / ratePerUsd;
+    stmt.run(code, rateToIdr);
+    count++;
+  }
+ 
+  console.log(`[Kurs] ${count} mata uang diupdate dari API (1 USD = Rp ${Math.round(idrPerUsd).toLocaleString('id-ID')})`);
+  return { count, usdRate: Math.round(idrPerUsd) };
+}
+ 
+/**
+ * Ambil waktu terakhir live rates diupdate
+ */
+function getLiveRateUpdatedAt() {
+  const db = getDb();
+  const row = db.prepare('SELECT updated_at FROM live_rates ORDER BY updated_at DESC LIMIT 1').get();
+  return row?.updated_at || null;
+}
+ 
+/**
+ * Set kurs manual (custom) untuk wallet — override live rates
+ * Bisa pakai kode apapun, tidak terbatas
+ */
+function setCurrency(walletId, code, rateToIdr) {
+  const db = getDb();
+  const upper = code.toUpperCase();
+  if (upper.length < 2 || upper.length > 6 || !/^[A-Z]+$/.test(upper)) {
+    throw new Error(`Kode mata uang tidak valid: "${upper}"\nContoh yang benar: THB, USD, MYR`);
+  }
+  db.prepare(`
+    INSERT INTO currencies (wallet_id, code, rate_to_idr)
+    VALUES (?, ?, ?)
+    ON CONFLICT(wallet_id, code) DO UPDATE SET rate_to_idr = excluded.rate_to_idr, updated_at = datetime('now', 'localtime')
+  `).run(walletId, upper, rateToIdr);
+  return { code: upper, rateToIdr };
+}
+ 
+/**
+ * Ambil semua kurs: live rates + custom wallet (custom ditandai)
+ */
+function getCurrencies(walletId) {
+  const db = getDb();
+  const custom = db.prepare('SELECT code, rate_to_idr, updated_at FROM currencies WHERE wallet_id = ?').all(walletId);
+  const live   = db.prepare('SELECT code, rate_to_idr, updated_at FROM live_rates ORDER BY code').all();
+ 
+  const customMap = new Map(custom.map(r => [r.code, r]));
+ 
+  // Merge: custom override live
+  const merged = [
+    ...custom.map(r => ({ ...r, is_custom: true })),
+    ...live.filter(r => !customMap.has(r.code)).map(r => ({ ...r, is_custom: false })),
+  ];
+ 
+  return merged;
+}
+ 
+/**
+ * Convert jumlah dari currency ke IDR
+ * Priority: custom wallet → live rates → hardcoded defaults
+ * @returns {number} jumlah dalam IDR (dibulatkan)
+ */
+function convertToIdr(walletId, amount, currencyCode) {
+  const upper = currencyCode.toUpperCase();
+  if (upper === 'IDR') return amount;
+ 
+  const db = getDb();
+ 
+  // 1. Kurs custom per wallet
+  const customRow = db.prepare('SELECT rate_to_idr FROM currencies WHERE wallet_id = ? AND code = ?').get(walletId, upper);
+  if (customRow) return Math.round(amount * customRow.rate_to_idr);
+ 
+  // 2. Live rates dari API
+  const liveRow = db.prepare('SELECT rate_to_idr FROM live_rates WHERE code = ?').get(upper);
+  if (liveRow) return Math.round(amount * liveRow.rate_to_idr);
+ 
+  // 3. Fallback hardcoded
+  const rate = DEFAULT_RATES[upper];
+  if (rate) return Math.round(amount * rate);
+ 
+  throw new Error(`Kurs ${upper} tidak tersedia.\nCoba: !kurs update untuk refresh, atau !kurs set ${upper} [nilai ke IDR]`);
+}
+ 
 module.exports = {
   addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
   editTransaction,
   addRecurring, getRecurring, deleteRecurring, processRecurring,
   getWeeklyAnalysis,
+  fetchLiveRates, getLiveRateUpdatedAt,
+  setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS, POPULAR_CURRENCIES,
 };

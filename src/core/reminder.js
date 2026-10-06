@@ -1,3 +1,4 @@
+
 // ─── Reminder / Cron Job ─────────────────────────────────
 // Kirim notif harian otomatis ke semua wallet yang aktif
 // Di-init setelah Telegram & WA bot ready
@@ -5,7 +6,7 @@
 const cron = require('node-cron');
 const fs = require('fs');
 const { getDb, getDbPath } = require('./database');
-const { getSaldo, processRecurring, getWeeklyAnalysis } = require('./finance');
+const { getSaldo, processRecurring, getWeeklyAnalysis, fetchLiveRates } = require('./finance');
 const { getGoals, getGoalProgress } = require('./goals');
 const { formatRupiah, progressBar } = require('./formatter');
  
@@ -29,6 +30,7 @@ function initReminders(tgBot, sock) {
   scheduleRecurringProcessor();
   scheduleWeeklyTips();
   scheduleAutoBackup();
+  scheduleRateFetch();
   console.log('✅ Reminder scheduler aktif');
 }
  
@@ -318,6 +320,33 @@ function scheduleAutoBackup() {
   }, { timezone: 'Asia/Jakarta' });
  
   console.log('[Backup] Cron dijadwalkan (Minggu 22:00 WIB)');
+}
+ 
+/**
+ * Fetch live exchange rates saat startup + jadwalkan refresh harian jam 07:00 WIB
+ */
+function scheduleRateFetch() {
+  // Fetch langsung saat bot start
+  fetchLiveRates()
+    .then(({ count, usdRate }) => {
+      console.log(`[Kurs] Startup: ${count} mata uang siap (1 USD = Rp ${usdRate.toLocaleString('id-ID')})`);
+    })
+    .catch(err => {
+      console.error('[Kurs] Gagal fetch saat startup:', err.message);
+    });
+ 
+  // Refresh harian jam 07:00 WIB
+  cron.schedule('0 7 * * *', async () => {
+    console.log('[Kurs] Auto-refresh live rates...');
+    try {
+      const { count, usdRate } = await fetchLiveRates();
+      console.log(`[Kurs] Update ${count} mata uang (1 USD = Rp ${usdRate.toLocaleString('id-ID')})`);
+    } catch (err) {
+      console.error('[Kurs] Gagal refresh harian:', err.message);
+    }
+  }, { timezone: 'Asia/Jakarta' });
+ 
+  console.log('[Kurs] Rate fetcher dijadwalkan (07:00 WIB tiap hari)');
 }
  
 module.exports = { initReminders, setReminder, disableReminder };
