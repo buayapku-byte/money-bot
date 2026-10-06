@@ -1,12 +1,16 @@
 const { Telegraf, Markup } = require('telegraf');
 const config = require('../../config');
 const { getOrCreateWallet } = require('../core/database');
-const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori } = require('../core/finance');
+const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
+  setBudget, getBudgets, deleteBudget, checkBudgetAlert,
+  editTransaction,
+  addRecurring, getRecurring, deleteRecurring } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
   formatRupiah, formatSaldo, formatTransaksi,
   formatHistory, formatLaporan, formatKategori, formatGoals,
+  formatBudgets, formatRecurring,
 } = require('../core/formatter');
  
 // ─── Helper ───────────────────────────────────────────────
@@ -84,7 +88,8 @@ function createTelegramBot() {
       `\`/saldo\` — lihat saldo sekarang\n` +
       `\`/history\` — 10 transaksi terakhir\n` +
       `\`/undo\` — batalkan transaksi terakhir\n` +
-      `\`/hapus 42\` — hapus transaksi by ID\n\n` +
+      `\`/hapus 42\` — hapus transaksi by ID\n` +
+      `\`/edit 42 75rb kopi susu\` — edit jumlah & catatan\n\n` +
       `🎯 *Target Tabungan*\n` +
       `\`/target buat Liburan 3jt\` — buat goal baru\n` +
       `\`/target buat HP 5000000 2026-12-31\` — dengan deadline\n` +
@@ -96,6 +101,14 @@ function createTelegramBot() {
       `\`/laporan minggu\` — laporan 7 hari terakhir\n` +
       `\`/laporan bulan\` — laporan bulan ini\n` +
       `\`/kategori [hari/minggu/bulan]\` — breakdown per kategori\n\n` +
+      `💡 *Budget*\n` +
+      `\`/budget\` — lihat budget bulan ini\n` +
+      `\`/budget makan 500rb\` — set budget kategori\n` +
+      `\`/budget hapus makan\` — hapus budget\n\n` +
+      `🔄 *Rutin (Berulang)*\n` +
+      `\`/rutin\` — lihat daftar rutin\n` +
+      `\`/rutin tambah keluar 150rb netflix 5\` — tiap tgl 5\n` +
+      `\`/rutin hapus [id]\` — hapus rutin\n\n` +
       `⏰ *Reminder*\n` +
       `\`/reminder 20:00\` — set notif harian jam 20:00\n` +
       `\`/reminder off\` — matiin reminder\n`
@@ -135,10 +148,21 @@ function createTelegramBot() {
       const trx = addTransaction(wallet.id, type, amount, note, 'umum', createdBy);
       const { saldo } = getSaldo(wallet.id);
  
-      await replyMd(ctx,
-        formatTransaksi(trx) +
-        `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`
-      );
+      let replyText = formatTransaksi(trx) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`;
+ 
+      // Cek budget alert kalau ini pengeluaran
+      if (type === 'out') {
+        const alert = checkBudgetAlert(wallet.id, trx.category);
+        if (alert) {
+          const icon = alert.level === 'danger' ? '🚨' : '⚠️';
+          const label = alert.level === 'danger' ? 'Budget HABIS' : 'Budget hampir habis';
+          replyText += `\n\n${icon} *${label}!*\n` +
+            `Kategori: ${alert.category}\n` +
+            `Terpakai: ${formatRupiah(alert.spent)} / ${formatRupiah(alert.budget)} (${alert.persen}%)`;
+        }
+      }
+ 
+      await replyMd(ctx, replyText);
     } catch (err) {
       console.error('[TG /catat]', err);
       replyError(ctx, 'Terjadi error. Coba lagi.');
@@ -424,6 +448,180 @@ function createTelegramBot() {
     } catch (err) {
       console.error('[TG /reminder]', err);
       replyError(ctx, err.message || 'Terjadi error.');
+    }
+  });
+ 
+  // ─── /budget ──────────────────────────────────────────
+  // Usage: /budget
+  //        /budget makan 500rb
+  //        /budget hapus makan
+  bot.command('budget', async (ctx) => {
+    try {
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      const wallet = getWallet(ctx);
+ 
+      // Tanpa args — lihat budget
+      if (!args.length) {
+        const budgets = getBudgets(wallet.id);
+        return replyMd(ctx, formatBudgets(budgets));
+      }
+ 
+      const sub = args[0]?.toLowerCase();
+ 
+      // /budget hapus [kategori]
+      if (sub === 'hapus') {
+        const category = args[1]?.toLowerCase();
+        if (!category) return replyError(ctx, 'Ketik nama kategori.\nContoh: `/budget hapus makan`');
+        const deleted = deleteBudget(wallet.id, category);
+        return replyMd(ctx,
+          `✅ *Budget dihapus!*\n\nKategori: ${deleted.category}\nBudget: ${formatRupiah(deleted.amount)}`
+        );
+      }
+ 
+      // /budget [kategori] [jumlah]
+      const category = sub;
+      const amount = parseJumlah(args[1]);
+      if (!amount || amount <= 0) {
+        return replyError(ctx,
+          `Format salah!\nContoh: \`/budget makan 500rb\` atau \`/budget transport 300rb\``
+        );
+      }
+ 
+      const budget = setBudget(wallet.id, category, amount);
+      return replyMd(ctx,
+        `✅ *Budget diset!*\n\n` +
+        `Kategori: *${budget.category}*\n` +
+        `Budget: *${formatRupiah(budget.amount)}*\n` +
+        `Bulan: ${budget.month}\n\n` +
+        `_Kamu akan dapat peringatan saat mencapai 80% dan 100%._`
+      );
+    } catch (err) {
+      console.error('[TG /budget]', err);
+      replyError(ctx, err.message || 'Gagal proses budget.');
+    }
+  });
+ 
+  // ─── /rutin ───────────────────────────────────────────
+  // Usage: /rutin
+  //        /rutin tambah keluar 150rb netflix 5
+  //        /rutin hapus [id]
+  bot.command('rutin', async (ctx) => {
+    try {
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      const wallet = getWallet(ctx);
+ 
+      // Tanpa args — lihat daftar rutin
+      if (!args.length) {
+        const list = getRecurring(wallet.id);
+        return replyMd(ctx, formatRecurring(list, '/'));
+      }
+ 
+      const sub = args[0]?.toLowerCase();
+ 
+      // /rutin hapus [id]
+      if (sub === 'hapus') {
+        const id = parseInt(args[1]);
+        if (!args[1] || isNaN(id) || id <= 0) {
+          return replyError(ctx, 'Ketik ID rutin.\nContoh: `/rutin hapus 3`');
+        }
+        const deleted = deleteRecurring(wallet.id, id);
+        return replyMd(ctx,
+          `✅ *Rutin dihapus!*\n\n` +
+          `${deleted.type === 'in' ? '📈' : '📉'} ${formatRupiah(deleted.amount)}` +
+          (deleted.note ? ` · ${deleted.note}` : '') +
+          `\nTiap tgl ${deleted.day_of_month}`
+        );
+      }
+ 
+      // /rutin tambah [masuk/keluar] [jumlah] [catatan...] [tgl]
+      if (sub === 'tambah') {
+        const typeRaw = args[1]?.toLowerCase();
+        if (!typeRaw || !['masuk', 'keluar', 'in', 'out'].includes(typeRaw)) {
+          return replyError(ctx,
+            `Format salah!\nContoh:\n\`/rutin tambah keluar 150rb netflix 5\`\n\`/rutin tambah masuk 5jt gaji 25\``
+          );
+        }
+ 
+        const type = ['masuk', 'in'].includes(typeRaw) ? 'in' : 'out';
+        const amount = parseJumlah(args[2]);
+        if (!amount || amount <= 0) {
+          return replyError(ctx,
+            `Jumlah tidak valid.\nContoh: \`/rutin tambah keluar 150rb netflix 5\``
+          );
+        }
+ 
+        // Arg terakhir harus angka 1-28 (tanggal)
+        const lastArg = args[args.length - 1];
+        const day = parseInt(lastArg);
+        if (isNaN(day) || day < 1 || day > 28) {
+          return replyError(ctx,
+            `Tanggal tidak valid (1-28).\nContoh: \`/rutin tambah keluar 150rb netflix 5\``
+          );
+        }
+ 
+        const note = args.slice(3, args.length - 1).join(' ') || '';
+        const rec = addRecurring(wallet.id, type, amount, note, 'umum', day);
+ 
+        return replyMd(ctx,
+          `✅ *Transaksi rutin ditambah!*\n\n` +
+          `${rec.type === 'in' ? '📈' : '📉'} *${formatRupiah(rec.amount)}*` +
+          (rec.note ? ` · ${rec.note}` : '') + `\n` +
+          `Kategori: ${rec.category}\n` +
+          `Tiap tanggal: *${rec.day_of_month}*\n\n` +
+          `_Akan dicatat otomatis setiap bulan._`
+        );
+      }
+ 
+      return replyError(ctx,
+        `Subcommand tidak valid.\nGunakan:\n\`/rutin\`\n\`/rutin tambah keluar 150rb netflix 5\`\n\`/rutin hapus [id]\``
+      );
+    } catch (err) {
+      console.error('[TG /rutin]', err);
+      replyError(ctx, err.message || 'Gagal proses rutin.');
+    }
+  });
+ 
+  // ─── /edit ────────────────────────────────────────────
+  // Usage: /edit 42 75rb
+  //        /edit 42 75rb kopi susu
+  //        /edit 42 - catatan baru (skip amount dengan -)
+  bot.command('edit', async (ctx) => {
+    try {
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      const id = parseInt(args[0]);
+ 
+      if (!args[0] || isNaN(id) || id <= 0) {
+        return replyError(ctx,
+          `Format salah!\nContoh:\n\`/edit 42 75rb\` — ubah jumlah\n\`/edit 42 75rb kopi susu\` — ubah jumlah & catatan`
+        );
+      }
+ 
+      const newAmount = args[1] ? parseJumlah(args[1]) : null;
+      const newNote = args.length > 2 ? args.slice(2).join(' ') : null;
+ 
+      if (newAmount === null && newNote === null) {
+        return replyError(ctx,
+          `Ketik jumlah atau catatan baru.\nContoh: \`/edit 42 75rb kopi susu\``
+        );
+      }
+      if (args[1] && newAmount === null) {
+        return replyError(ctx,
+          `Jumlah tidak valid: *${args[1]}*\nContoh: \`75000\`, \`75rb\`, \`1.5jt\``
+        );
+      }
+ 
+      const wallet = getWallet(ctx);
+      const updated = editTransaction(wallet.id, id, newAmount, newNote);
+ 
+      return replyMd(ctx,
+        `✏️ *Transaksi diupdate!*\n\n` +
+        `#${updated.id} ${updated.type === 'in' ? '📈' : '📉'} *${formatRupiah(updated.amount)}*` +
+        (updated.note ? `\nCatatan: ${updated.note}` : '') +
+        `\nKategori: ${updated.category}`
+      );
+    } catch (err) {
+      console.error('[TG /edit]', err);
+      replyError(ctx, err.message || 'Gagal edit transaksi.');
     }
   });
  

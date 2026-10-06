@@ -13,7 +13,10 @@ const fs = require('fs');
 const config = require('../../config');
 const { getOrCreateWallet } = require('../core/database');
 const { setQR, clearQR } = require('../core/qr-server');
-const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori } = require('../core/finance');
+const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
+  setBudget, getBudgets, deleteBudget, checkBudgetAlert,
+  editTransaction,
+  addRecurring, getRecurring, deleteRecurring } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -24,6 +27,8 @@ const {
   formatLaporan,
   formatKategori,
   formatGoals,
+  formatBudgets,
+  formatRecurring,
 } = require('../core/formatter');
  
 // ─── State ────────────────────────────────────────────────
@@ -102,7 +107,8 @@ async function handleHelp(sock, msg) {
     `${prefix}saldo — lihat saldo\n` +
     `${prefix}history — 10 transaksi terakhir\n` +
     `${prefix}undo — batalkan transaksi terakhir\n` +
-    `${prefix}hapus [id] — hapus transaksi by ID\n\n` +
+    `${prefix}hapus [id] — hapus transaksi by ID\n` +
+    `${prefix}edit [id] [jumlah] [catatan] — edit transaksi\n\n` +
     `🎯 *Target Tabungan*\n` +
     `${prefix}target buat Liburan 3jt\n` +
     `${prefix}target buat HP 5jt 2026-12-31\n` +
@@ -114,6 +120,14 @@ async function handleHelp(sock, msg) {
     `${prefix}laporan minggu\n` +
     `${prefix}laporan bulan\n` +
     `${prefix}kategori [hari/minggu/bulan]\n\n` +
+    `💡 *Budget*\n` +
+    `${prefix}budget — lihat semua budget bulan ini\n` +
+    `${prefix}budget makan 500rb — set budget kategori\n` +
+    `${prefix}budget hapus makan — hapus budget\n\n` +
+    `🔄 *Rutin (Berulang)*\n` +
+    `${prefix}rutin — lihat daftar rutin\n` +
+    `${prefix}rutin tambah keluar 150rb netflix 5 — tiap tgl 5\n` +
+    `${prefix}rutin hapus [id]\n\n` +
     `⏰ *Reminder*\n` +
     `${prefix}reminder 20:00 — aktifkan notif harian\n` +
     `${prefix}reminder off — matikan notif\n\n` +
@@ -152,9 +166,21 @@ async function handleCatat(sock, msg, args, senderName) {
     const trx = addTransaction(wallet.id, type, amount, note, 'umum', senderName);
     const { saldo } = getSaldo(wallet.id);
  
-    await reply(sock, msg,
-      formatTransaksi(trx) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`
-    );
+    let replyText = formatTransaksi(trx) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`;
+ 
+    // Cek budget alert kalau ini pengeluaran
+    if (type === 'out') {
+      const alert = checkBudgetAlert(wallet.id, trx.category);
+      if (alert) {
+        const icon = alert.level === 'danger' ? '🚨' : '⚠️';
+        const label = alert.level === 'danger' ? 'Budget HABIS' : 'Budget hampir habis';
+        replyText += `\n\n${icon} *${label}!*\n` +
+          `Kategori: ${alert.category}\n` +
+          `Terpakai: ${formatRupiah(alert.spent)} / ${formatRupiah(alert.budget)} (${alert.persen}%)`;
+      }
+    }
+ 
+    await reply(sock, msg, replyText);
   } catch (err) {
     console.error('[WA /catat]', err);
     reply(sock, msg, '❌ Gagal catat transaksi. Coba lagi.');
@@ -411,6 +437,175 @@ async function handleReminder(sock, msg, args) {
   }
 }
  
+async function handleBudget(sock, msg, args) {
+  const prefix = config.wa.prefix;
+  try {
+    const wallet = getWallet(msg.key.remoteJid);
+ 
+    // Tanpa args — lihat semua budget
+    if (!args.length) {
+      const budgets = getBudgets(wallet.id);
+      return reply(sock, msg, formatBudgets(budgets));
+    }
+ 
+    const sub = args[0]?.toLowerCase();
+ 
+    // !budget hapus [kategori]
+    if (sub === 'hapus') {
+      const category = args[1]?.toLowerCase();
+      if (!category) return reply(sock, msg, `❌ Ketik nama kategori.\nContoh: ${prefix}budget hapus makan`);
+      const deleted = deleteBudget(wallet.id, category);
+      return reply(sock, msg,
+        `✅ *Budget dihapus!*\n\nKategori: ${deleted.category}\nBudget: ${formatRupiah(deleted.amount)}`
+      );
+    }
+ 
+    // !budget [kategori] [jumlah]
+    const category = sub;
+    const amount = parseJumlah(args[1]);
+    if (!amount || amount <= 0) {
+      return reply(sock, msg,
+        `❌ Format salah!\nContoh:\n` +
+        `${prefix}budget makan 500rb\n` +
+        `${prefix}budget transport 300rb`
+      );
+    }
+ 
+    const budget = setBudget(wallet.id, category, amount);
+    return reply(sock, msg,
+      `✅ *Budget diset!*\n\n` +
+      `Kategori: *${budget.category}*\n` +
+      `Budget: *${formatRupiah(budget.amount)}*\n` +
+      `Bulan: ${budget.month}\n\n` +
+      `_Kamu akan dapat peringatan saat mencapai 80% dan 100%._`
+    );
+  } catch (err) {
+    console.error('[WA /budget]', err);
+    reply(sock, msg, `❌ ${err.message || 'Gagal proses budget.'}`);
+  }
+}
+ 
+async function handleRutin(sock, msg, args) {
+  const prefix = config.wa.prefix;
+  try {
+    const wallet = getWallet(msg.key.remoteJid);
+ 
+    // Tanpa args — lihat daftar rutin
+    if (!args.length) {
+      const list = getRecurring(wallet.id);
+      return reply(sock, msg, formatRecurring(list, prefix));
+    }
+ 
+    const sub = args[0]?.toLowerCase();
+ 
+    // !rutin hapus [id]
+    if (sub === 'hapus') {
+      const id = parseInt(args[1]);
+      if (!args[1] || isNaN(id) || id <= 0) {
+        return reply(sock, msg, `❌ Ketik ID rutin.\nContoh: ${prefix}rutin hapus 3`);
+      }
+      const deleted = deleteRecurring(wallet.id, id);
+      return reply(sock, msg,
+        `✅ *Rutin dihapus!*\n\n` +
+        `${deleted.type === 'in' ? '📈' : '📉'} ${formatRupiah(deleted.amount)}` +
+        (deleted.note ? ` · ${deleted.note}` : '') +
+        `\nTiap tgl ${deleted.day_of_month}`
+      );
+    }
+ 
+    // !rutin tambah [masuk/keluar] [jumlah] [catatan...] [tgl]
+    if (sub === 'tambah') {
+      const typeRaw = args[1]?.toLowerCase();
+      if (!typeRaw || !['masuk', 'keluar', 'in', 'out'].includes(typeRaw)) {
+        return reply(sock, msg,
+          `❌ Format salah!\nContoh:\n` +
+          `${prefix}rutin tambah keluar 150rb netflix 5\n` +
+          `${prefix}rutin tambah masuk 5jt gaji 25`
+        );
+      }
+ 
+      const type = ['masuk', 'in'].includes(typeRaw) ? 'in' : 'out';
+      const amount = parseJumlah(args[2]);
+      if (!amount || amount <= 0) {
+        return reply(sock, msg,
+          `❌ Jumlah tidak valid.\nContoh: ${prefix}rutin tambah keluar 150rb netflix 5`
+        );
+      }
+ 
+      // Arg terakhir harus angka 1-28 (tanggal)
+      const lastArg = args[args.length - 1];
+      const day = parseInt(lastArg);
+      if (isNaN(day) || day < 1 || day > 28) {
+        return reply(sock, msg,
+          `❌ Tanggal tidak valid (1-28).\nContoh: ${prefix}rutin tambah keluar 150rb netflix 5`
+        );
+      }
+ 
+      const note = args.slice(3, args.length - 1).join(' ') || '';
+      const rec = addRecurring(wallet.id, type, amount, note, 'umum', day);
+ 
+      return reply(sock, msg,
+        `✅ *Transaksi rutin ditambah!*\n\n` +
+        `${rec.type === 'in' ? '📈' : '📉'} *${formatRupiah(rec.amount)}*` +
+        (rec.note ? ` · ${rec.note}` : '') + `\n` +
+        `Kategori: ${rec.category}\n` +
+        `Tiap tanggal: *${rec.day_of_month}*\n\n` +
+        `_Akan dicatat otomatis setiap bulan._`
+      );
+    }
+ 
+    // Subcommand tidak dikenal
+    return reply(sock, msg,
+      `❌ Subcommand tidak valid.\nGunakan:\n` +
+      `${prefix}rutin\n` +
+      `${prefix}rutin tambah keluar 150rb netflix 5\n` +
+      `${prefix}rutin hapus [id]`
+    );
+  } catch (err) {
+    console.error('[WA /rutin]', err);
+    reply(sock, msg, `❌ ${err.message || 'Gagal proses rutin.'}`);
+  }
+}
+ 
+async function handleEdit(sock, msg, args) {
+  const prefix = config.wa.prefix;
+  try {
+    const id = parseInt(args[0]);
+    if (!args[0] || isNaN(id) || id <= 0) {
+      return reply(sock, msg,
+        `❌ Format salah!\nContoh:\n` +
+        `${prefix}edit 42 75rb — ubah jumlah\n` +
+        `${prefix}edit 42 75rb kopi susu — ubah jumlah & catatan`
+      );
+    }
+ 
+    const newAmount = args[1] ? parseJumlah(args[1]) : null;
+    const newNote = args.length > 2 ? args.slice(2).join(' ') : null;
+ 
+    if (newAmount === null && newNote === null) {
+      return reply(sock, msg,
+        `❌ Ketik jumlah atau catatan baru.\nContoh: ${prefix}edit 42 75rb kopi susu`
+      );
+    }
+    if (args[1] && newAmount === null) {
+      return reply(sock, msg, `❌ Jumlah tidak valid: *${args[1]}*\nContoh: 75000 · 75rb · 1.5jt`);
+    }
+ 
+    const wallet = getWallet(msg.key.remoteJid);
+    const updated = editTransaction(wallet.id, id, newAmount, newNote);
+ 
+    return reply(sock, msg,
+      `✏️ *Transaksi diupdate!*\n\n` +
+      `#${updated.id} ${updated.type === 'in' ? '📈' : '📉'} *${formatRupiah(updated.amount)}*` +
+      (updated.note ? `\nCatatan: ${updated.note}` : '') +
+      `\nKategori: ${updated.category}`
+    );
+  } catch (err) {
+    console.error('[WA /edit]', err);
+    reply(sock, msg, `❌ ${err.message || 'Gagal edit transaksi.'}`);
+  }
+}
+ 
 // ─── Router ───────────────────────────────────────────────
  
 /**
@@ -471,6 +666,17 @@ async function routeMessage(sock, msg, text, senderName) {
     case 'reminder':
     case 'notif':
       return handleReminder(sock, msg, args);
+ 
+    case 'budget':
+    case 'anggaran':
+      return handleBudget(sock, msg, args);
+ 
+    case 'rutin':
+    case 'recurring':
+      return handleRutin(sock, msg, args);
+ 
+    case 'edit':
+      return handleEdit(sock, msg, args);
  
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
