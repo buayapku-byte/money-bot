@@ -23,6 +23,14 @@ function initDatabase() {
  
   createTables();
  
+  // Migration: tambah kolom lang kalau belum ada (untuk DB yang sudah ada)
+  try {
+    db.exec("ALTER TABLE wallets ADD COLUMN lang TEXT DEFAULT 'id'");
+    console.log('[DB] Kolom lang ditambahkan ke wallets');
+  } catch (_) {
+    // kolom sudah ada — skip
+  }
+ 
   console.log(`✅ Database ready: ${config.db.path}`);
   return db;
 }
@@ -295,6 +303,25 @@ function unlinkWallet(memberWalletId) {
   return link;
 }
  
+/**
+ * Ambil bahasa wallet
+ * @param {string} walletId
+ * @returns {string} 'id' | 'en'
+ */
+function getLang(walletId) {
+  const row = db.prepare('SELECT lang FROM wallets WHERE id = ?').get(walletId);
+  return row?.lang || 'id';
+}
+ 
+/**
+ * Set bahasa wallet
+ * @param {string} walletId
+ * @param {string} lang - 'id' | 'en'
+ */
+function setLang(walletId, lang) {
+  db.prepare("UPDATE wallets SET lang = ? WHERE id = ?").run(lang, walletId);
+}
+ 
 module.exports = {
   initDatabase,
   getOrCreateWallet,
@@ -303,4 +330,6 @@ module.exports = {
   createInviteCode,
   useInviteCode,
   unlinkWallet,
+  getLang,
+  setLang,
 };

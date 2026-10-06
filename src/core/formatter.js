@@ -2,6 +2,8 @@
 // Format pesan yang konsisten untuk Telegram & WhatsApp
 // Telegram support Markdown, WA pakai teks biasa
  
+const { t } = require('./i18n');
+ 
 /**
  * Format angka ke rupiah
  * @param {number} amount
@@ -25,11 +27,14 @@ function formatTanggal(dateStr) {
  
 /**
  * Format datetime ke "Selasa, 6 Oktober 2026 · 15:29"
+ * @param {string} datetimeStr
+ * @param {string} lang - 'id' | 'en'
  */
-function formatDatetime(datetimeStr) {
+function formatDatetime(datetimeStr, lang = 'id') {
   const d = new Date(datetimeStr);
   const pad = (n) => String(n).padStart(2, '0');
-  const tanggal = d.toLocaleDateString('id-ID', {
+  const locale = lang === 'en' ? 'en-US' : 'id-ID';
+  const tanggal = d.toLocaleDateString(locale, {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
   return `${tanggal} · ${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -49,73 +54,89 @@ function progressBar(persen, panjang = 10) {
  
 /**
  * Format pesan saldo
+ * @param {object} data
+ * @param {string} lang - 'id' | 'en'
  */
-function formatSaldo({ saldo, total_masuk, total_keluar }) {
+function formatSaldo({ saldo, total_masuk, total_keluar }, lang = 'id') {
   const sign = saldo >= 0 ? '✅' : '⚠️';
   return (
-    `💰 *Saldo Sekarang*\n\n` +
-    `${sign} Saldo: *${formatRupiah(saldo)}*\n` +
-    `📈 Total masuk: ${formatRupiah(total_masuk)}\n` +
-    `📉 Total keluar: ${formatRupiah(total_keluar)}`
+    `${t(lang, 'saldo_title')}\n\n` +
+    `${sign} ${t(lang, 'saldo_label')}: *${formatRupiah(saldo)}*\n` +
+    `${t(lang, 'income_label')}: ${formatRupiah(total_masuk)}\n` +
+    `${t(lang, 'expense_label')}: ${formatRupiah(total_keluar)}`
   );
 }
  
 /**
  * Format pesan konfirmasi transaksi
+ * @param {object} trx
+ * @param {string} lang - 'id' | 'en'
  */
-function formatTransaksi(trx) {
-  const icon = trx.type === 'in' ? '📈' : '📉';
-  const label = trx.type === 'in' ? 'Pemasukan' : 'Pengeluaran';
+function formatTransaksi(trx, lang = 'id') {
+  const icon  = trx.type === 'in' ? '📈' : '📉';
+  const label = t(lang, trx.type === 'in' ? 'type_in' : 'type_out');
   return (
-    `${icon} *${label} dicatat!*\n\n` +
-    `Jumlah: *${formatRupiah(trx.amount)}*\n` +
-    (trx.note ? `Catatan: ${trx.note}\n` : '') +
-    (trx.category !== 'umum' ? `Kategori: ${trx.category}\n` : '') +
-    `Waktu: ${formatDatetime(trx.created_at)}`
+    `${icon} *${label} ${t(lang, 'trx_saved')}*\n\n` +
+    `${t(lang, 'trx_amount')}: *${formatRupiah(trx.amount)}*\n` +
+    (trx.note     ? `${t(lang, 'trx_note')}: ${trx.note}\n`         : '') +
+    (trx.category !== 'umum' ? `${t(lang, 'trx_category')}: ${trx.category}\n` : '') +
+    `${t(lang, 'trx_time')}: ${formatDatetime(trx.created_at, lang)}`
   );
 }
  
 /**
  * Format daftar history transaksi
+ * @param {Array}  transactions
+ * @param {string} lang - 'id' | 'en'
  */
-function formatHistory(transactions) {
-  if (!transactions.length) return '📭 Belum ada transaksi.';
+function formatHistory(transactions, lang = 'id') {
+  if (!transactions.length) return t(lang, 'no_transaction');
  
-  const rows = transactions.map((t) => {
-    const icon = t.type === 'in' ? '📈' : '📉';
-    const note = t.note ? ` · ${t.note}` : '';
-    return `${icon} *#${t.id}* ${formatRupiah(t.amount)}${note}\n   _${t.date}_`;
+  const rows = transactions.map((tx) => {
+    const icon = tx.type === 'in' ? '📈' : '📉';
+    const note = tx.note ? ` · ${tx.note}` : '';
+    return `${icon} *#${tx.id}* ${formatRupiah(tx.amount)}${note}\n   _${tx.date}_`;
   });
  
-  return `📋 *Riwayat Transaksi*\n\n` + rows.join('\n') + `\n\n_Menampilkan ${transactions.length} transaksi terakhir_\n_Gunakan /hapus [id] untuk hapus transaksi_`;
+  return (
+    `${t(lang, 'history_title')}\n\n` +
+    rows.join('\n') + `\n\n` +
+    t(lang, 'showing_last', transactions.length)
+  );
 }
  
 /**
  * Format laporan per periode
+ * @param {object} data
+ * @param {string} period - 'hari' | 'minggu' | 'bulan'
+ * @param {string} lang   - 'id' | 'en'
  */
-function formatLaporan({ transactions, summary }, period) {
-  const labelPeriod = { hari: 'Hari Ini', minggu: 'Minggu Ini', bulan: 'Bulan Ini' };
-  const label = labelPeriod[period] || 'Periode';
+function formatLaporan({ transactions, summary }, period, lang = 'id') {
+  const labelPeriod = {
+    hari:   t(lang, 'period_hari'),
+    minggu: t(lang, 'period_minggu'),
+    bulan:  t(lang, 'period_bulan'),
+  };
+  const label = labelPeriod[period] || t(lang, 'period_label');
  
-  let msg = `📊 *Laporan ${label}*\n\n`;
-  msg += `📈 Masuk:  *${formatRupiah(summary.total_masuk)}*\n`;
-  msg += `📉 Keluar: *${formatRupiah(summary.total_keluar)}*\n`;
+  let msg = `${t(lang, 'lap_title', label)}\n\n`;
+  msg += `${t(lang, 'lap_income')}:  *${formatRupiah(summary.total_masuk)}*\n`;
+  msg += `${t(lang, 'lap_expense')}: *${formatRupiah(summary.total_keluar)}*\n`;
   msg += `─────────────────\n`;
  
   const selisih = summary.selisih;
-  const sign = selisih >= 0 ? '✅ Surplus' : '⚠️ Defisit';
-  msg += `${sign}: *${formatRupiah(selisih)}*\n`;
-  msg += `\nTotal ${summary.jumlah_transaksi} transaksi`;
+  msg += `${t(lang, selisih >= 0 ? 'surplus' : 'deficit')}: *${formatRupiah(selisih)}*\n`;
+  msg += `\n${t(lang, 'lap_total', summary.jumlah_transaksi)}`;
  
   if (transactions.length > 0) {
-    msg += `\n\n*Detail:*\n`;
-    transactions.slice(0, 8).forEach((t) => {
-      const icon = t.type === 'in' ? '↑' : '↓';
-      const note = t.note ? ` ${t.note}` : '';
-      msg += `${icon} ${formatRupiah(t.amount)}${note} _(${t.date})_\n`;
+    msg += `\n\n${t(lang, 'lap_detail')}\n`;
+    transactions.slice(0, 8).forEach((tx) => {
+      const icon = tx.type === 'in' ? '↑' : '↓';
+      const note = tx.note ? ` ${tx.note}` : '';
+      msg += `${icon} ${formatRupiah(tx.amount)}${note} _(${tx.date})_\n`;
     });
     if (transactions.length > 8) {
-      msg += `_...dan ${transactions.length - 8} lainnya_`;
+      msg += t(lang, 'lap_more', transactions.length - 8);
     }
   }
  
@@ -124,10 +145,18 @@ function formatLaporan({ transactions, summary }, period) {
  
 /**
  * Format laporan per kategori
+ * @param {Array}  rows
+ * @param {string} period  - 'hari' | 'minggu' | 'bulan'
+ * @param {string} lang    - 'id' | 'en'
+ * @param {string} prefix  - command prefix untuk link kosong
  */
-function formatKategori(rows, period) {
-  const labelPeriod = { hari: 'Hari Ini', minggu: 'Minggu Ini', bulan: 'Bulan Ini' };
-  const label = labelPeriod[period] || 'Bulan Ini';
+function formatKategori(rows, period, lang = 'id', prefix = '/') {
+  const labelPeriod = {
+    hari:   t(lang, 'period_hari'),
+    minggu: t(lang, 'period_minggu'),
+    bulan:  t(lang, 'period_bulan'),
+  };
+  const label = labelPeriod[period] || t(lang, 'period_bulan');
  
   const ICON = {
     makan: '🍽️', jajan: '🧃', transport: '🚗', belanja: '🛍️', tagihan: '💡',
@@ -140,10 +169,10 @@ function formatKategori(rows, period) {
   const totalKeluar = keluar.reduce((s, r) => s + r.total, 0);
   const totalMasuk  = masuk.reduce((s, r) => s + r.total, 0);
  
-  let msg = `📊 *Laporan Kategori — ${label}*\n\n`;
+  let msg = `${t(lang, 'kat_title', label)}\n\n`;
  
   if (keluar.length) {
-    msg += `📉 *Pengeluaran:*\n`;
+    msg += `${t(lang, 'kat_expense')}\n`;
     keluar.forEach(r => {
       const icon   = ICON[r.category] || '📌';
       const persen = totalKeluar > 0 ? Math.round((r.total / totalKeluar) * 100) : 0;
@@ -151,11 +180,11 @@ function formatKategori(rows, period) {
       msg += `${icon} *${r.category}*\n   ${bar}\n   ${formatRupiah(r.total)} · ${r.jumlah}x\n\n`;
     });
     msg += `─────────────────\n`;
-    msg += `Total: *${formatRupiah(totalKeluar)}*\n\n`;
+    msg += `${t(lang, 'kat_total')}: *${formatRupiah(totalKeluar)}*\n\n`;
   }
  
   if (masuk.length) {
-    msg += `📈 *Pemasukan:*\n`;
+    msg += `${t(lang, 'kat_income')}\n`;
     masuk.forEach(r => {
       const icon   = ICON[r.category] || '📌';
       const persen = totalMasuk > 0 ? Math.round((r.total / totalMasuk) * 100) : 0;
@@ -164,15 +193,12 @@ function formatKategori(rows, period) {
   }
  
   if (!keluar.length && !masuk.length) {
-    msg += '_Belum ada transaksi di periode ini._\n\nCoba: `/kategori bulan`';
+    msg += t(lang, 'kat_empty', prefix);
   }
  
   return msg.trim();
 }
  
-/**
- * Format daftar goals
- */
 /**
  * Konversi IDR ke USD — pakai rate atau default 15750
  * @param {number} idr
@@ -183,49 +209,51 @@ function toUsd(idr, usdRate) {
   const rate = usdRate || 15750;
   return '$' + (idr / rate).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-
+ 
 /**
  * Format daftar goals — dengan konversi USD opsional
- * @param {Array} goals
+ * @param {Array}    goals
  * @param {Function} getGoalProgress
  * @param {number|null} usdRate - 1 USD = X IDR (dari live_rates, null = pakai default)
+ * @param {string}   lang   - 'id' | 'en'
+ * @param {string}   prefix - command prefix untuk pesan kosong
  */
-function formatGoals(goals, getGoalProgress, usdRate = null) {
-  if (!goals.length) return '🎯 Belum ada target tabungan.\n\nGunakan `/target buat NamaGoal 1000000` untuk mulai.';
-
+function formatGoals(goals, getGoalProgress, usdRate = null, lang = 'id', prefix = '/') {
+  if (!goals.length) return t(lang, 'goals_empty', prefix);
+ 
   const rateLabel = usdRate
     ? `_Kurs: 1 USD = ${formatRupiah(Math.round(usdRate))}_`
     : `_Kurs: 1 USD = ${formatRupiah(15750)} (default)_`;
-
-  let msg = `🎯 *Target Tabungan*\n${rateLabel}\n\n`;
+ 
+  let msg = `${t(lang, 'goals_title')}\n${rateLabel}\n\n`;
   goals.forEach((g, i) => {
     const { persen, sisaHari } = getGoalProgress(g);
     msg += `*${i + 1}. ${g.name}*\n`;
     msg += `   ${progressBar(persen)}\n`;
     msg += `   ${formatRupiah(g.current_amount)} _(${toUsd(g.current_amount, usdRate)})_\n`;
-    msg += `   Target: ${formatRupiah(g.target_amount)} _(${toUsd(g.target_amount, usdRate)})_\n`;
+    msg += `   ${t(lang, 'goals_target')}: ${formatRupiah(g.target_amount)} _(${toUsd(g.target_amount, usdRate)})_\n`;
     if (sisaHari !== null) {
-      const sisaLabel = sisaHari > 0 ? `${sisaHari} hari lagi` : sisaHari === 0 ? 'Hari ini!' : `Terlewat ${Math.abs(sisaHari)} hari`;
+      const sisaLabel = sisaHari > 0
+        ? t(lang, 'goals_days', sisaHari)
+        : sisaHari === 0
+        ? t(lang, 'goals_today')
+        : t(lang, 'goals_overdue', sisaHari);
       msg += `   ⏰ ${sisaLabel} _(${g.deadline})_\n`;
     }
     msg += '\n';
   });
-
+ 
   return msg.trim();
 }
  
 /**
  * Format daftar budget bulan ini
+ * @param {Array}  budgets
+ * @param {string} lang - 'id' | 'en'
  */
-function formatBudgets(budgets) {
+function formatBudgets(budgets, lang = 'id') {
   if (!budgets.length) {
-    return (
-      `💡 *Budget Bulan Ini*\n\n` +
-      `_Belum ada budget.\n\n` +
-      `Gunakan:\n` +
-      `/budget makan 500rb\n` +
-      `/budget transport 300rb_`
-    );
+    return t(lang, 'budget_empty');
   }
  
   const ICON = {
@@ -233,7 +261,7 @@ function formatBudgets(budgets) {
     hiburan:'🎮', kesehatan:'🏥', gaji:'💼', bonus:'🎁', transfer:'💸', umum:'📌',
   };
  
-  let msg = `💡 *Budget Bulan Ini*\n\n`;
+  let msg = `${t(lang, 'budget_title')}\n\n`;
   budgets.forEach(b => {
     const icon   = ICON[b.category] || '📌';
     const persen = Math.min(b.persen, 100);
@@ -249,16 +277,13 @@ function formatBudgets(budgets) {
  
 /**
  * Format daftar transaksi berulang
+ * @param {Array}  list
+ * @param {string} prefix - command prefix
+ * @param {string} lang   - 'id' | 'en'
  */
-function formatRecurring(list, prefix = '/') {
+function formatRecurring(list, prefix = '/', lang = 'id') {
   if (!list.length) {
-    return (
-      `🔄 *Transaksi Berulang*\n\n` +
-      `_Belum ada.\n\n` +
-      `Contoh:\n` +
-      `${prefix}rutin tambah keluar 150rb netflix 5\n` +
-      `(catat keluar 150rb "netflix" tiap tgl 5)_`
-    );
+    return t(lang, 'rec_empty', prefix);
   }
  
   const ICON = {
@@ -266,122 +291,127 @@ function formatRecurring(list, prefix = '/') {
     hiburan:'🎮', kesehatan:'🏥', gaji:'💼', bonus:'🎁', transfer:'💸', umum:'📌',
   };
  
-  let msg = `🔄 *Transaksi Berulang*\n\n`;
+  let msg = `${t(lang, 'rec_title')}\n\n`;
   list.forEach(r => {
     const dirIcon = r.type === 'in' ? '📈' : '📉';
     const catIcon = ICON[r.category] || '📌';
     msg += `*#${r.id}* ${dirIcon} *${formatRupiah(r.amount)}*`;
     if (r.note) msg += ` · ${r.note}`;
-    msg += `\n   ${catIcon} ${r.category} · tiap tgl *${r.day_of_month}*\n`;
+    msg += `\n   ${catIcon} ${r.category} · ${t(lang, 'rec_every')} *${r.day_of_month}*\n`;
   });
-  msg += `\n_Gunakan ${prefix}rutin hapus [id] untuk hapus_`;
+  msg += `\n${t(lang, 'rec_delete', prefix)}`;
  
   return msg;
 }
  
 /**
  * Format hasil analisis keuangan bulanan
+ * @param {object} data
+ * @param {string} lang - 'id' | 'en'
  */
-function formatAnalisis(data) {
+function formatAnalisis(data, lang = 'id') {
   const { masukIni, keluarIni, savingsRate, trenKeluar, hariBoros,
     perKategori, hariUnik, rataHari, jumlahTransaksi, bulan } = data;
-
-  const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
-    'Juli','Agustus','September','Oktober','November','Desember'];
+ 
+  const BULAN = t(lang, 'BULAN');
   const [year, month] = bulan.split('-');
-  const bulanLabel = `${NAMA_BULAN[parseInt(month) - 1]} ${year}`;
-
-  let msg = `🧠 *Analisis Keuangan — ${bulanLabel}*\n\n`;
-
-  msg += `💰 Pemasukan:   *${formatRupiah(masukIni)}*\n`;
-  msg += `💸 Pengeluaran: *${formatRupiah(keluarIni)}*\n`;
-  msg += `📊 Savings Rate: *${savingsRate}%*  ${savingsRate >= 30 ? '🟢' : savingsRate >= 10 ? '🟡' : '🔴'}\n`;
-
+  const bulanLabel = `${BULAN[parseInt(month) - 1]} ${year}`;
+ 
+  let msg = `${t(lang, 'an_title', bulanLabel)}\n\n`;
+ 
+  msg += `${t(lang, 'an_income')}:   *${formatRupiah(masukIni)}*\n`;
+  msg += `${t(lang, 'an_expense')}: *${formatRupiah(keluarIni)}*\n`;
+  msg += `${t(lang, 'an_savings')}: *${savingsRate}%*  ${savingsRate >= 30 ? '🟢' : savingsRate >= 10 ? '🟡' : '🔴'}\n`;
+ 
   if (trenKeluar !== null) {
-    const icon  = trenKeluar > 0 ? '📈' : '📉';
-    const label = trenKeluar > 0 ? `naik ${trenKeluar}%` : `turun ${Math.abs(trenKeluar)}%`;
-    msg += `${icon} Pengeluaran vs bulan lalu: *${label}*\n`;
+    const str = trenKeluar > 0
+      ? t(lang, 'an_up', trenKeluar)
+      : t(lang, 'an_down', Math.abs(trenKeluar));
+    msg += `${str}\n`;
   }
-
-  msg += `\n📋 *${jumlahTransaksi} transaksi* dalam ${hariUnik} hari aktif\n`;
-  if (rataHari > 0) msg += `📌 Rata-rata pengeluaran/hari: *${formatRupiah(rataHari)}*\n`;
-  if (hariBoros)    msg += `📅 Hari paling boros: *${hariBoros}*\n`;
-
+ 
+  msg += `\n${t(lang, 'an_txs', jumlahTransaksi, hariUnik)}\n`;
+  if (rataHari > 0) msg += `${t(lang, 'an_avg')}: *${formatRupiah(rataHari)}*\n`;
+  if (hariBoros)    msg += `${t(lang, 'an_busiest')}: *${hariBoros}*\n`;
+ 
   if (perKategori.length > 0) {
-    msg += `\n📊 *Top Pengeluaran:*\n`;
+    msg += `\n${t(lang, 'an_top')}\n`;
     perKategori.slice(0, 5).forEach((k, i) => {
       const persen = keluarIni > 0 ? Math.round((k.total / keluarIni) * 100) : 0;
       msg += `${i + 1}. *${k.category}* — ${formatRupiah(k.total)} (${persen}%) · ${k.jumlah}x\n`;
     });
   }
-
-  msg += `\n💡 *Saran:*\n`;
+ 
+  msg += `\n${t(lang, 'an_advice')}\n`;
   if (savingsRate < 0) {
-    msg += `🚨 Pengeluaran melebihi pemasukan! Segera kurangi pengeluaran.\n`;
+    msg += `${t(lang, 'an_crit')}\n`;
   } else if (savingsRate < 20) {
-    msg += `⚠️ Savings rate ${savingsRate}% — targetkan minimal 20% dari pemasukan.\n`;
+    msg += `${t(lang, 'an_low', savingsRate)}\n`;
   } else if (savingsRate >= 50) {
-    msg += `🎉 Savings rate ${savingsRate}% — luar biasa! Pertahankan terus.\n`;
+    msg += `${t(lang, 'an_high', savingsRate)}\n`;
   } else {
-    msg += `✅ Savings rate ${savingsRate}% — sudah bagus!\n`;
+    msg += `${t(lang, 'an_ok', savingsRate)}\n`;
   }
-
+ 
   if (trenKeluar !== null && trenKeluar >= 30) {
-    msg += `⚠️ Pengeluaran naik *${trenKeluar}%* dari bulan lalu — perlu diwaspadai.\n`;
+    msg += `${t(lang, 'an_twarn', trenKeluar)}\n`;
   } else if (trenKeluar !== null && trenKeluar <= -20) {
-    msg += `🎉 Berhasil hemat *${Math.abs(trenKeluar)}%* dibanding bulan lalu!\n`;
+    msg += `${t(lang, 'an_tgood', Math.abs(trenKeluar))}\n`;
   }
-
+ 
   if (perKategori.length > 0) {
     const top = perKategori[0];
     const persen = keluarIni > 0 ? Math.round((top.total / keluarIni) * 100) : 0;
     if (persen >= 40) {
-      msg += `💡 *${top.category}* makan ${persen}% budget — coba batasi dengan /budget.\n`;
+      msg += `${t(lang, 'an_topwarn', top.category, persen)}\n`;
     }
   }
-
+ 
   return msg.trim();
 }
-
+ 
 /**
  * Format snapshot net worth / kekayaan
+ * @param {object} data
+ * @param {string} lang - 'id' | 'en'
  */
-function formatKekayaan(data) {
+function formatKekayaan(data, lang = 'id') {
   const { saldo, totalTabungan, totalKekayaan, goals, usdRate } = data;
-
+ 
   const toUsdStr = (idr) => {
     const rate = usdRate || 15750;
     return '$' + Math.round(idr / rate).toLocaleString('en-US');
   };
-
+ 
   const rateLabel = usdRate
     ? `_Kurs: 1 USD = ${formatRupiah(Math.round(usdRate))}_`
     : `_Kurs: 1 USD = ${formatRupiah(15750)} (default)_`;
-
-  const tanggal = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
-
-  let msg = `💎 *Net Worth Snapshot*\n${rateLabel}\n\n`;
-
-  msg += `💰 Saldo Aktif:   *${formatRupiah(saldo)}* _(${toUsdStr(saldo)})_\n`;
-  msg += `🎯 Total Tabungan: *${formatRupiah(totalTabungan)}* _(${toUsdStr(totalTabungan)})_\n`;
+ 
+  const locale  = lang === 'en' ? 'en-US' : 'id-ID';
+  const tanggal = new Date().toLocaleDateString(locale, { day: 'numeric', month: 'long', year: 'numeric' });
+ 
+  let msg = `${t(lang, 'kk_title')}\n${rateLabel}\n\n`;
+ 
+  msg += `${t(lang, 'kk_balance')}:   *${formatRupiah(saldo)}* _(${toUsdStr(saldo)})_\n`;
+  msg += `${t(lang, 'kk_savings')}: *${formatRupiah(totalTabungan)}* _(${toUsdStr(totalTabungan)})_\n`;
   msg += `─────────────────\n`;
-
+ 
   const netSign = totalKekayaan >= 0 ? '💎' : '⚠️';
-  msg += `${netSign} *Net Worth: ${formatRupiah(totalKekayaan)}* _(${toUsdStr(totalKekayaan)})_\n`;
-
+  msg += `${netSign} *${t(lang, 'kk_net')}: ${formatRupiah(totalKekayaan)}* _(${toUsdStr(totalKekayaan)})_\n`;
+ 
   if (goals.length > 0) {
-    msg += `\n📊 *Rincian Goals:*\n`;
+    msg += `\n${t(lang, 'kk_goals')}\n`;
     goals.forEach(g => {
       const persen = g.target_amount > 0 ? Math.min(100, Math.round((g.current_amount / g.target_amount) * 100)) : 0;
       const status = g.is_completed || persen >= 100 ? '✅' : '🎯';
       msg += `${status} *${g.name}*: ${formatRupiah(g.current_amount)} _(${persen}%)_\n`;
     });
   }
-
-  msg += `\n_Snapshot per ${tanggal}_`;
+ 
+  msg += `\n${t(lang, 'kk_snap', tanggal)}`;
   return msg.trim();
 }
-
+ 
 module.exports = {
   formatRupiah,
   formatTanggal,

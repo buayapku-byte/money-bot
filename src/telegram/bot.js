@@ -1,6 +1,7 @@
 const { Telegraf, Markup } = require('telegraf');
 const config = require('../../config');
-const { getOrCreateWallet, resolveWalletId, createInviteCode, useInviteCode, unlinkWallet } = require('../core/database');
+const { getOrCreateWallet, resolveWalletId, createInviteCode, useInviteCode, unlinkWallet, getLang, setLang } = require('../core/database');
+const { t } = require('../core/i18n');
 const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
   editTransaction,
@@ -56,17 +57,22 @@ function parseJumlah(str) {
  
 /**
  * Ambil wallet dari context Telegram — auto-resolve ke primary kalau linked
+ * Attaches wallet.lang dari database
  */
 function getWallet(ctx) {
   const chatId = ctx.chat.id;
   const name = ctx.chat.title || ctx.chat.first_name || 'Unknown';
   const wallet = getOrCreateWallet('telegram', chatId, name);
   const primaryId = resolveWalletId(wallet.id);
+  let finalWallet;
   if (primaryId !== wallet.id) {
     const { getDb } = require('../core/database');
-    return getDb().prepare('SELECT * FROM wallets WHERE id = ?').get(primaryId) || wallet;
+    finalWallet = getDb().prepare('SELECT * FROM wallets WHERE id = ?').get(primaryId) || wallet;
+  } else {
+    finalWallet = wallet;
   }
-  return wallet;
+  finalWallet.lang = getLang(finalWallet.id);
+  return finalWallet;
 }
  
 /**
@@ -201,7 +207,7 @@ function createTelegramBot() {
       const trx = addTransaction(wallet.id, type, finalAmount, fullNote, 'umum', createdBy);
       const { saldo } = getSaldo(wallet.id);
  
-      let replyText = formatTransaksi(trx) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`;
+      let replyText = formatTransaksi(trx, wallet.lang) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`;
  
       // Cek budget alert kalau ini pengeluaran
       if (type === 'out') {
@@ -227,7 +233,7 @@ function createTelegramBot() {
     try {
       const wallet = getWallet(ctx);
       const data = getSaldo(wallet.id);
-      await replyMd(ctx, formatSaldo(data));
+      await replyMd(ctx, formatSaldo(data, wallet.lang));
     } catch (err) {
       console.error('[TG /saldo]', err);
       replyError(ctx, 'Gagal ambil saldo.');
@@ -244,7 +250,7 @@ function createTelegramBot() {
  
       const wallet = getWallet(ctx);
       const transactions = getHistory(wallet.id, limit);
-      await replyMd(ctx, formatHistory(transactions));
+      await replyMd(ctx, formatHistory(transactions, wallet.lang));
     } catch (err) {
       console.error('[TG /history]', err);
       replyError(ctx, 'Gagal ambil history.');
@@ -290,7 +296,7 @@ function createTelegramBot() {
  
       const wallet = getWallet(ctx);
       const data = getLaporan(wallet.id, period);
-      await replyMd(ctx, formatLaporan(data, period));
+      await replyMd(ctx, formatLaporan(data, period, wallet.lang));
     } catch (err) {
       console.error('[TG /laporan]', err);
       replyError(ctx, 'Gagal buat laporan.');
@@ -329,7 +335,7 @@ function createTelegramBot() {
           const usdRow = getDb().prepare('SELECT rate_to_idr FROM live_rates WHERE code = ?').get('USD');
           if (usdRow) usdRate = usdRow.rate_to_idr;
         } catch (_) {}
-        return replyMd(ctx, formatGoals(goals, getGoalProgress, usdRate));
+        return replyMd(ctx, formatGoals(goals, getGoalProgress, usdRate, wallet.lang, '/'));
       }
  
       // /target hapus NamaGoal
@@ -471,7 +477,7 @@ function createTelegramBot() {
  
       const wallet = getWallet(ctx);
       const rows = getLaporanKategori(wallet.id, period);
-      await replyMd(ctx, formatKategori(rows, period));
+      await replyMd(ctx, formatKategori(rows, period, wallet.lang, '/'));
     } catch (err) {
       console.error('[TG /kategori]', err);
       replyError(ctx, 'Gagal buat laporan kategori.');
@@ -551,7 +557,7 @@ function createTelegramBot() {
       // Tanpa args — lihat budget
       if (!args.length) {
         const budgets = getBudgets(wallet.id);
-        return replyMd(ctx, formatBudgets(budgets));
+        return replyMd(ctx, formatBudgets(budgets, wallet.lang));
       }
  
       const sub = args[0]?.toLowerCase();
@@ -603,7 +609,7 @@ function createTelegramBot() {
       // Tanpa args — lihat daftar rutin
       if (!args.length) {
         const list = getRecurring(wallet.id);
-        return replyMd(ctx, formatRecurring(list, '/'));
+        return replyMd(ctx, formatRecurring(list, '/', wallet.lang));
       }
  
       const sub = args[0]?.toLowerCase();
@@ -921,7 +927,7 @@ function createTelegramBot() {
     try {
       const wallet = getWallet(ctx);
       const data = getAnalisis(wallet.id);
-      replyMd(ctx, formatAnalisis(data));
+      replyMd(ctx, formatAnalisis(data, wallet.lang));
     } catch (err) {
       console.error('[TG /analisis]', err);
       replyError(ctx, err.message || 'Terjadi error.');
@@ -933,10 +939,37 @@ function createTelegramBot() {
     try {
       const wallet = getWallet(ctx);
       const data = getKekayaan(wallet.id);
-      replyMd(ctx, formatKekayaan(data));
+      replyMd(ctx, formatKekayaan(data, wallet.lang));
     } catch (err) {
       console.error('[TG /kekayaan]', err);
       replyError(ctx, err.message || 'Terjadi error.');
+    }
+  });
+ 
+  // ─── /bahasa ──────────────────────────────────────────
+  // Usage: /bahasa        → tampilkan bahasa aktif
+  //        /bahasa id     → ganti ke Bahasa Indonesia
+  //        /bahasa en     → switch to English
+  bot.command('bahasa', async (ctx) => {
+    try {
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      const langArg = args[0]?.toLowerCase();
+      const myWallet = getOrCreateWallet('telegram', ctx.chat.id, ctx.chat.title || ctx.chat.first_name || 'Unknown');
+ 
+      if (!langArg) {
+        const currentLang = getLang(myWallet.id);
+        return replyMd(ctx, t(currentLang, 'lang_current') + '\n\n' + t(currentLang, 'lang_usage'));
+      }
+ 
+      if (!['id', 'en'].includes(langArg)) {
+        return replyError(ctx, t(getLang(myWallet.id), 'lang_usage'));
+      }
+ 
+      setLang(myWallet.id, langArg);
+      return replyMd(ctx, t(langArg, 'lang_switched', langArg));
+    } catch (err) {
+      console.error('[TG /bahasa]', err);
+      replyError(ctx, 'Terjadi error.');
     }
   });
  

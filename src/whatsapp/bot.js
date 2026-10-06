@@ -11,7 +11,8 @@ const pino = require('pino');
 const fs = require('fs');
  
 const config = require('../../config');
-const { getOrCreateWallet, resolveWalletId, createInviteCode, useInviteCode, unlinkWallet } = require('../core/database');
+const { getOrCreateWallet, resolveWalletId, createInviteCode, useInviteCode, unlinkWallet, getLang, setLang } = require('../core/database');
+const { t } = require('../core/i18n');
 const { setQR, clearQR } = require('../core/qr-server');
 const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
@@ -87,15 +88,20 @@ function stripForWA(text) {
  
 /**
  * Ambil wallet dari pesan WA — auto-resolve ke primary kalau linked
+ * Attaches wallet.lang dari database
  */
 function getWallet(chatId, chatName = '') {
   const wallet = getOrCreateWallet('whatsapp', chatId, chatName);
   const primaryId = resolveWalletId(wallet.id);
+  let finalWallet;
   if (primaryId !== wallet.id) {
     const { getDb } = require('../core/database');
-    return getDb().prepare('SELECT * FROM wallets WHERE id = ?').get(primaryId) || wallet;
+    finalWallet = getDb().prepare('SELECT * FROM wallets WHERE id = ?').get(primaryId) || wallet;
+  } else {
+    finalWallet = wallet;
   }
-  return wallet;
+  finalWallet.lang = getLang(finalWallet.id);
+  return finalWallet;
 }
  
 /**
@@ -228,7 +234,7 @@ async function handleCatat(sock, msg, args, senderName) {
     const trx = addTransaction(wallet.id, type, finalAmount, fullNote, 'umum', senderName);
     const { saldo } = getSaldo(wallet.id);
  
-    let replyText = formatTransaksi(trx) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`;
+    let replyText = formatTransaksi(trx, wallet.lang) + `\n\n💰 Saldo sekarang: *${formatRupiah(saldo)}*`;
  
     // Cek budget alert kalau ini pengeluaran
     if (type === 'out') {
@@ -253,7 +259,7 @@ async function handleSaldo(sock, msg) {
   try {
     const wallet = getWallet(msg.key.remoteJid);
     const data = getSaldo(wallet.id);
-    await reply(sock, msg, formatSaldo(data));
+    await reply(sock, msg, formatSaldo(data, wallet.lang));
   } catch (err) {
     console.error('[WA /saldo]', err);
     reply(sock, msg, '❌ Gagal ambil saldo.');
@@ -265,7 +271,7 @@ async function handleHistory(sock, msg, args) {
     const limit = Math.min(parseInt(args[0]) || 10, 30);
     const wallet = getWallet(msg.key.remoteJid);
     const transactions = getHistory(wallet.id, limit);
-    await reply(sock, msg, formatHistory(transactions));
+    await reply(sock, msg, formatHistory(transactions, wallet.lang));
   } catch (err) {
     console.error('[WA /history]', err);
     reply(sock, msg, '❌ Gagal ambil history.');
@@ -310,7 +316,7 @@ async function handleLaporan(sock, msg, args) {
  
     const wallet = getWallet(msg.key.remoteJid);
     const data = getLaporan(wallet.id, period);
-    await reply(sock, msg, formatLaporan(data, period));
+    await reply(sock, msg, formatLaporan(data, period, wallet.lang));
   } catch (err) {
     console.error('[WA /laporan]', err);
     reply(sock, msg, '❌ Gagal buat laporan.');
@@ -343,7 +349,7 @@ async function handleTarget(sock, msg, args) {
         const usdRow = getDb().prepare('SELECT rate_to_idr FROM live_rates WHERE code = ?').get('USD');
         if (usdRow) usdRate = usdRow.rate_to_idr;
       } catch (_) {}
-      return reply(sock, msg, formatGoals(goals, getGoalProgress, usdRate));
+      return reply(sock, msg, formatGoals(goals, getGoalProgress, usdRate, wallet.lang, config.wa.prefix));
     }
  
     if (sub === 'hapus') {
@@ -499,7 +505,7 @@ async function handleKategori(sock, msg, args) {
     }
     const wallet = getWallet(msg.key.remoteJid);
     const rows = getLaporanKategori(wallet.id, period);
-    await reply(sock, msg, formatKategori(rows, period));
+    await reply(sock, msg, formatKategori(rows, period, wallet.lang, config.wa.prefix));
   } catch (err) {
     console.error('[WA /kategori]', err);
     reply(sock, msg, '❌ Gagal buat laporan kategori.');
@@ -542,7 +548,7 @@ async function handleBudget(sock, msg, args) {
     // Tanpa args — lihat semua budget
     if (!args.length) {
       const budgets = getBudgets(wallet.id);
-      return reply(sock, msg, formatBudgets(budgets));
+      return reply(sock, msg, formatBudgets(budgets, wallet.lang));
     }
  
     const sub = args[0]?.toLowerCase();
@@ -593,7 +599,7 @@ async function handleRutin(sock, msg, args) {
     // Tanpa args — lihat daftar rutin
     if (!args.length) {
       const list = getRecurring(wallet.id);
-      return reply(sock, msg, formatRecurring(list, prefix));
+      return reply(sock, msg, formatRecurring(list, prefix, wallet.lang));
     }
  
     const sub = args[0]?.toLowerCase();
@@ -876,6 +882,32 @@ async function handleKurs(sock, msg, args) {
   }
 }
  
+// ─── Bahasa / Language ────────────────────────────────────
+ 
+async function handleBahasa(sock, msg, args) {
+  const prefix = config.wa.prefix;
+  const chatId = msg.key.remoteJid;
+  try {
+    const langArg = args[0]?.toLowerCase();
+    const myWallet = getOrCreateWallet('whatsapp', chatId, '');
+ 
+    if (!langArg) {
+      const currentLang = getLang(myWallet.id);
+      return reply(sock, msg, t(currentLang, 'lang_current') + '\n\n' + t(currentLang, 'lang_usage').replace(/`\//g, `\`${prefix}`));
+    }
+ 
+    if (!['id', 'en'].includes(langArg)) {
+      return reply(sock, msg, '❌ ' + t(getLang(myWallet.id), 'lang_usage').replace(/`\//g, `\`${prefix}`));
+    }
+ 
+    setLang(myWallet.id, langArg);
+    return reply(sock, msg, t(langArg, 'lang_switched', langArg));
+  } catch (err) {
+    console.error('[WA !bahasa]', err);
+    reply(sock, msg, '❌ Terjadi error.');
+  }
+}
+ 
 // ─── Router ───────────────────────────────────────────────
  
 /**
@@ -966,6 +998,10 @@ async function routeMessage(sock, msg, text, senderName) {
     case 'networth':
       return handleKekayaan(sock, msg, args);
  
+    case 'bahasa':
+    case 'language':
+      return handleBahasa(sock, msg, args);
+ 
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
       break;
@@ -1005,12 +1041,11 @@ async function handleExport(sock, msg, args) {
  
 async function handleAnalisis(sock, msg, args) {
   const chatId = msg.key.remoteJid;
-  const wallet = getOrCreateWallet('whatsapp', chatId, '');
-  const walletId = resolveWalletId(wallet.id);
+  const wallet = getWallet(chatId);
  
   try {
-    const data = getAnalisis(walletId);
-    const text = formatAnalisis(data);
+    const data = getAnalisis(wallet.id);
+    const text = formatAnalisis(data, wallet.lang);
     return sock.sendMessage(chatId, { text });
   } catch (err) {
     console.error('[WA !analisis]', err);
@@ -1022,12 +1057,11 @@ async function handleAnalisis(sock, msg, args) {
  
 async function handleKekayaan(sock, msg, args) {
   const chatId = msg.key.remoteJid;
-  const wallet = getOrCreateWallet('whatsapp', chatId, '');
-  const walletId = resolveWalletId(wallet.id);
+  const wallet = getWallet(chatId);
  
   try {
-    const data = getKekayaan(walletId);
-    const text = formatKekayaan(data);
+    const data = getKekayaan(wallet.id);
+    const text = formatKekayaan(data, wallet.lang);
     return sock.sendMessage(chatId, { text });
   } catch (err) {
     console.error('[WA !kekayaan]', err);
