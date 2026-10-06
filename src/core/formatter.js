@@ -189,6 +189,71 @@ function formatGoals(goals, getGoalProgress) {
   return msg.trim();
 }
  
+/**
+ * Format daftar budget bulan ini
+ */
+function formatBudgets(budgets) {
+  if (!budgets.length) {
+    return (
+      `💡 *Budget Bulan Ini*\n\n` +
+      `_Belum ada budget.\n\n` +
+      `Gunakan:\n` +
+      `/budget makan 500rb\n` +
+      `/budget transport 300rb_`
+    );
+  }
+ 
+  const ICON = {
+    makan:'🍽️', jajan:'🧃', transport:'🚗', belanja:'🛍️', tagihan:'💡',
+    hiburan:'🎮', kesehatan:'🏥', gaji:'💼', bonus:'🎁', transfer:'💸', umum:'📌',
+  };
+ 
+  let msg = `💡 *Budget Bulan Ini*\n\n`;
+  budgets.forEach(b => {
+    const icon   = ICON[b.category] || '📌';
+    const persen = Math.min(b.persen, 100);
+    const bar    = progressBar(persen, 8);
+    const level  = b.persen >= 100 ? '🚨' : b.persen >= 80 ? '⚠️' : '✅';
+    msg += `${icon} *${b.category}*  ${level}\n`;
+    msg += `   ${bar}\n`;
+    msg += `   ${formatRupiah(b.spent)} / ${formatRupiah(b.amount)}\n\n`;
+  });
+ 
+  return msg.trim();
+}
+ 
+/**
+ * Format daftar transaksi berulang
+ */
+function formatRecurring(list, prefix = '/') {
+  if (!list.length) {
+    return (
+      `🔄 *Transaksi Berulang*\n\n` +
+      `_Belum ada.\n\n` +
+      `Contoh:\n` +
+      `${prefix}rutin tambah keluar 150rb netflix 5\n` +
+      `(catat keluar 150rb "netflix" tiap tgl 5)_`
+    );
+  }
+ 
+  const ICON = {
+    makan:'🍽️', jajan:'🧃', transport:'🚗', belanja:'🛍️', tagihan:'💡',
+    hiburan:'🎮', kesehatan:'🏥', gaji:'💼', bonus:'🎁', transfer:'💸', umum:'📌',
+  };
+ 
+  let msg = `🔄 *Transaksi Berulang*\n\n`;
+  list.forEach(r => {
+    const dirIcon = r.type === 'in' ? '📈' : '📉';
+    const catIcon = ICON[r.category] || '📌';
+    msg += `*#${r.id}* ${dirIcon} *${formatRupiah(r.amount)}*`;
+    if (r.note) msg += ` · ${r.note}`;
+    msg += `\n   ${catIcon} ${r.category} · tiap tgl *${r.day_of_month}*\n`;
+  });
+  msg += `\n_Gunakan ${prefix}rutin hapus [id] untuk hapus_`;
+ 
+  return msg;
+}
+ 
 module.exports = {
   formatRupiah,
   formatTanggal,
@@ -200,4 +265,6 @@ module.exports = {
   formatLaporan,
   formatKategori,
   formatGoals,
+  formatBudgets,
+  formatRecurring,
 };

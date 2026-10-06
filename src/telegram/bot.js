@@ -468,9 +468,9 @@ function createTelegramBot() {
  
       const sub = args[0]?.toLowerCase();
  
-      // /budget hapus [kategori]
+      // /budget hapus [kategori bisa multi-kata]
       if (sub === 'hapus') {
-        const category = args[1]?.toLowerCase();
+        const category = args.slice(1).join(' ').toLowerCase();
         if (!category) return replyError(ctx, 'Ketik nama kategori.\nContoh: `/budget hapus makan`');
         const deleted = deleteBudget(wallet.id, category);
         return replyMd(ctx,
@@ -478,14 +478,16 @@ function createTelegramBot() {
         );
       }
  
-      // /budget [kategori] [jumlah]
-      const category = sub;
-      const amount = parseJumlah(args[1]);
-      if (!amount || amount <= 0) {
+      // /budget [kategori bisa multi-kata] [jumlah]
+      // Jumlah selalu arg terakhir, sisanya = nama kategori
+      const amountRaw = args[args.length - 1];
+      const amount = parseJumlah(amountRaw);
+      if (!amount || amount <= 0 || args.length < 2) {
         return replyError(ctx,
-          `Format salah!\nContoh: \`/budget makan 500rb\` atau \`/budget transport 300rb\``
+          `Format salah!\nContoh:\n\`/budget makan 500rb\`\n\`/budget belanja online 1jt\`\n\`/budget transport 300rb\``
         );
       }
+      const category = args.slice(0, args.length - 1).join(' ').toLowerCase();
  
       const budget = setBudget(wallet.id, category, amount);
       return replyMd(ctx,

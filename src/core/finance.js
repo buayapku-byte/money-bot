@@ -198,4 +198,182 @@ function getLaporanKategori(walletId, period = 'bulan') {
   `).all(walletId);
 }
  
-module.exports = { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori };
+// ─── Budget Functions ─────────────────────────────────────
+ 
+/**
+ * Set atau update budget kategori bulan ini
+ */
+function setBudget(walletId, category, amount) {
+  const db = getDb();
+  const month = new Date().toISOString().slice(0, 7);
+  db.prepare(`
+    INSERT INTO budgets (wallet_id, category, amount, month)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(wallet_id, category, month) DO UPDATE SET amount = excluded.amount
+  `).run(walletId, category, amount, month);
+  return { category, amount, month };
+}
+ 
+/**
+ * Ambil semua budget bulan ini beserta pengeluaran aktual
+ */
+function getBudgets(walletId) {
+  const db = getDb();
+  const month = new Date().toISOString().slice(0, 7);
+  const budgets = db.prepare(
+    'SELECT * FROM budgets WHERE wallet_id = ? AND month = ? ORDER BY category ASC'
+  ).all(walletId, month);
+ 
+  return budgets.map(b => {
+    const spent = db.prepare(`
+      SELECT COALESCE(SUM(amount), 0) AS total
+      FROM transactions
+      WHERE wallet_id = ? AND category = ? AND type = 'out'
+      AND strftime('%Y-%m', date) = ?
+    `).get(walletId, b.category, month);
+    const persen = b.amount > 0 ? Math.round((spent.total / b.amount) * 100) : 0;
+    return { ...b, spent: spent.total, persen };
+  });
+}
+ 
+/**
+ * Hapus budget kategori bulan ini
+ */
+function deleteBudget(walletId, category) {
+  const db = getDb();
+  const month = new Date().toISOString().slice(0, 7);
+  const budget = db.prepare(
+    'SELECT * FROM budgets WHERE wallet_id = ? AND category = ? AND month = ?'
+  ).get(walletId, category, month);
+  if (!budget) throw new Error(`Budget kategori "${category}" tidak ada bulan ini.`);
+  db.prepare('DELETE FROM budgets WHERE wallet_id = ? AND category = ? AND month = ?')
+    .run(walletId, category, month);
+  return budget;
+}
+ 
+/**
+ * Cek apakah budget hampir/sudah habis setelah transaksi
+ * @returns {{ level: 'warning'|'danger', persen, budget, spent, category }} atau null
+ */
+function checkBudgetAlert(walletId, category) {
+  const db = getDb();
+  const month = new Date().toISOString().slice(0, 7);
+  const budget = db.prepare(
+    'SELECT * FROM budgets WHERE wallet_id = ? AND category = ? AND month = ?'
+  ).get(walletId, category, month);
+  if (!budget) return null;
+ 
+  const spent = db.prepare(`
+    SELECT COALESCE(SUM(amount), 0) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND category = ? AND type = 'out'
+    AND strftime('%Y-%m', date) = ?
+  `).get(walletId, category, month);
+ 
+  const persen = Math.round((spent.total / budget.amount) * 100);
+  if (persen >= 100) return { level: 'danger',  persen, budget: budget.amount, spent: spent.total, category };
+  if (persen >= 80)  return { level: 'warning', persen, budget: budget.amount, spent: spent.total, category };
+  return null;
+}
+ 
+// ─── Edit Transaction ─────────────────────────────────────
+ 
+/**
+ * Edit jumlah dan/atau catatan transaksi
+ * @param {string} walletId
+ * @param {number} id
+ * @param {number|null} amount - null = tidak berubah
+ * @param {string|null} note  - null = tidak berubah
+ */
+function editTransaction(walletId, id, amount, note) {
+  const db = getDb();
+  const trx = db.prepare('SELECT * FROM transactions WHERE id = ? AND wallet_id = ?').get(id, walletId);
+  if (!trx) throw new Error(`Transaksi #${id} tidak ditemukan.`);
+ 
+  const newAmount   = amount !== null ? amount : trx.amount;
+  const newNote     = note   !== null ? note   : trx.note;
+  const newCategory = (note !== null && note) ? detectCategory(note) : trx.category;
+ 
+  db.prepare(`
+    UPDATE transactions SET amount = ?, note = ?, category = ? WHERE id = ?
+  `).run(newAmount, newNote, newCategory, id);
+ 
+  return db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
+}
+ 
+// ─── Recurring Functions ──────────────────────────────────
+ 
+/**
+ * Tambah transaksi berulang
+ */
+function addRecurring(walletId, type, amount, note, category, dayOfMonth) {
+  const db = getDb();
+  const finalCategory = (category === 'umum' && note) ? detectCategory(note) : category;
+  const result = db.prepare(`
+    INSERT INTO recurring (wallet_id, type, amount, note, category, day_of_month)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(walletId, type, amount, note, finalCategory, dayOfMonth);
+  return db.prepare('SELECT * FROM recurring WHERE id = ?').get(result.lastInsertRowid);
+}
+ 
+/**
+ * Ambil daftar transaksi berulang aktif
+ */
+function getRecurring(walletId) {
+  const db = getDb();
+  return db.prepare(`
+    SELECT * FROM recurring WHERE wallet_id = ? AND is_active = 1
+    ORDER BY day_of_month ASC
+  `).all(walletId);
+}
+ 
+/**
+ * Hapus transaksi berulang
+ */
+function deleteRecurring(walletId, id) {
+  const db = getDb();
+  const rec = db.prepare('SELECT * FROM recurring WHERE id = ? AND wallet_id = ?').get(id, walletId);
+  if (!rec) throw new Error(`Rutin #${id} tidak ditemukan.`);
+  db.prepare('DELETE FROM recurring WHERE id = ?').run(id);
+  return rec;
+}
+ 
+/**
+ * Proses semua recurring yang harus dijalankan hari ini
+ * Dipanggil oleh cron harian di reminder.js
+ * @returns {Array} transaksi yang berhasil dicatat
+ */
+function processRecurring() {
+  const db = getDb();
+  const today     = new Date();
+  const todayStr  = today.toISOString().slice(0, 10);
+  const dayOfMonth = today.getDate();
+  const monthStr  = today.toISOString().slice(0, 7);
+ 
+  const toProcess = db.prepare(`
+    SELECT * FROM recurring
+    WHERE is_active = 1
+    AND day_of_month = ?
+    AND (last_run IS NULL OR strftime('%Y-%m', last_run) != ?)
+  `).all(dayOfMonth, monthStr);
+ 
+  const results = [];
+  toProcess.forEach(rec => {
+    try {
+      const trx = addTransaction(rec.wallet_id, rec.type, rec.amount, rec.note, rec.category, 'auto-rutin');
+      db.prepare('UPDATE recurring SET last_run = ? WHERE id = ?').run(todayStr, rec.id);
+      results.push({ rec, trx });
+    } catch (err) {
+      console.error(`[Recurring] Error #${rec.id}:`, err.message);
+    }
+  });
+ 
+  return results;
+}
+ 
+module.exports = {
+  addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
+  setBudget, getBudgets, deleteBudget, checkBudgetAlert,
+  editTransaction,
+  addRecurring, getRecurring, deleteRecurring, processRecurring,
+};

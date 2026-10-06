@@ -450,9 +450,9 @@ async function handleBudget(sock, msg, args) {
  
     const sub = args[0]?.toLowerCase();
  
-    // !budget hapus [kategori]
+    // !budget hapus [kategori bisa multi-kata]
     if (sub === 'hapus') {
-      const category = args[1]?.toLowerCase();
+      const category = args.slice(1).join(' ').toLowerCase();
       if (!category) return reply(sock, msg, `❌ Ketik nama kategori.\nContoh: ${prefix}budget hapus makan`);
       const deleted = deleteBudget(wallet.id, category);
       return reply(sock, msg,
@@ -460,17 +460,20 @@ async function handleBudget(sock, msg, args) {
       );
     }
  
-    // !budget [kategori] [jumlah]
-    const category = sub;
-    const amount = parseJumlah(args[1]);
-    if (!amount || amount <= 0) {
+    // !budget [kategori bisa multi-kata] [jumlah]
+    // Jumlah selalu arg terakhir, sisanya = nama kategori
+    const amountRaw = args[args.length - 1];
+    const amount = parseJumlah(amountRaw);
+    if (!amount || amount <= 0 || args.length < 2) {
       return reply(sock, msg,
         `❌ Format salah!\nContoh:\n` +
         `${prefix}budget makan 500rb\n` +
+        `${prefix}budget belanja online 1jt\n` +
         `${prefix}budget transport 300rb`
       );
     }
  
+    const category = args.slice(0, args.length - 1).join(' ').toLowerCase();
     const budget = setBudget(wallet.id, category, amount);
     return reply(sock, msg,
       `✅ *Budget diset!*\n\n` +

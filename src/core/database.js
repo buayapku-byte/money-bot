@@ -87,6 +87,37 @@ function createTables() {
       is_active   INTEGER DEFAULT 1,
       FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
     );
+ 
+    -- ─────────────────────────────────────────────────────
+    -- Budgets: limit pengeluaran per kategori per bulan
+    -- ─────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS budgets (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_id   TEXT NOT NULL,
+      category    TEXT NOT NULL,
+      amount      REAL NOT NULL CHECK(amount > 0),
+      month       TEXT NOT NULL,
+      created_at  TEXT DEFAULT (datetime('now', 'localtime')),
+      UNIQUE(wallet_id, category, month),
+      FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
+    );
+ 
+    -- ─────────────────────────────────────────────────────
+    -- Recurring: transaksi berulang tiap bulan
+    -- ─────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS recurring (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_id     TEXT NOT NULL,
+      type          TEXT NOT NULL CHECK(type IN ('in', 'out')),
+      amount        REAL NOT NULL CHECK(amount > 0),
+      note          TEXT,
+      category      TEXT DEFAULT 'umum',
+      day_of_month  INTEGER NOT NULL CHECK(day_of_month BETWEEN 1 AND 28),
+      last_run      TEXT,
+      is_active     INTEGER DEFAULT 1,
+      created_at    TEXT DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
+    );
   `);
 }
  
