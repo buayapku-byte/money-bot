@@ -487,17 +487,46 @@ const DEFAULT_RATES = { THB: 450, MYR: 3500, USD: 15750, SGD: 11800, EUR: 17200,
 const POPULAR_CURRENCIES = ['USD', 'EUR', 'GBP', 'SGD', 'MYR', 'THB', 'JPY', 'CNY', 'AUD', 'KRW', 'AED', 'SAR', 'HKD', 'INR', 'PHP', 'VND', 'TWD', 'CAD', 'CHF', 'NZD'];
  
 /**
- * Fetch kurs live dari open.exchangerate-api.com (gratis, tanpa API key)
+ * Fetch kurs live — coba beberapa API gratis, tanpa API key
  * Simpan ke tabel live_rates
  */
 async function fetchLiveRates() {
-  const res = await fetch('https://open.exchangerate-api.com/v6/latest/USD');
-  if (!res.ok) throw new Error(`HTTP ${res.status} dari exchange rate API`);
-  const data = await res.json();
-  if (data.result !== 'success') throw new Error('API error: ' + (data['error-type'] || 'unknown'));
+  let rates = null;
  
-  const idrPerUsd = data.conversion_rates?.IDR;
-  if (!idrPerUsd) throw new Error('IDR rate tidak ada di response');
+  // API 1: exchangerate-api.com v4 (format: { rates: { IDR: 15750, ... } })
+  try {
+    const res = await fetch('https://api.exchangerate-api.com/v4/latest/USD', { signal: AbortSignal.timeout(8000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.rates?.IDR) rates = data.rates;
+    }
+  } catch (_) {}
+ 
+  // API 2: open.exchangerate-api.com v6 (format: { conversion_rates: { IDR: 15750, ... } })
+  if (!rates) {
+    try {
+      const res = await fetch('https://open.exchangerate-api.com/v6/latest/USD', { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.conversion_rates?.IDR) rates = data.conversion_rates;
+      }
+    } catch (_) {}
+  }
+ 
+  // API 3: frankfurter.dev (format: { rates: { IDR: 15750, ... } })
+  if (!rates) {
+    try {
+      const res = await fetch('https://api.frankfurter.dev/v1/latest?base=USD', { signal: AbortSignal.timeout(8000) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.rates?.IDR) rates = data.rates;
+      }
+    } catch (_) {}
+  }
+ 
+  if (!rates?.IDR) throw new Error('Semua API kurs gagal — cek koneksi Railway');
+ 
+  const idrPerUsd = rates.IDR;
  
   const db = getDb();
   const stmt = db.prepare(`
@@ -507,7 +536,7 @@ async function fetchLiveRates() {
   `);
  
   let count = 0;
-  for (const [code, ratePerUsd] of Object.entries(data.conversion_rates)) {
+  for (const [code, ratePerUsd] of Object.entries(rates)) {
     if (code === 'IDR') continue;
     const rateToIdr = idrPerUsd / ratePerUsd;
     stmt.run(code, rateToIdr);

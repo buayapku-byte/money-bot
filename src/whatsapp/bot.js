@@ -963,37 +963,36 @@ async function createWhatsAppBot() {
     getMessage: async () => ({ conversation: '' }),
   });
  
-  // ─── Pairing code (jika WA_PHONE_NUMBER diset & belum registered) ───
-  if (!state.creds.registered && config.whatsapp.phoneNumber) {
-    const phone = config.whatsapp.phoneNumber.replace(/[^0-9]/g, '');
-    setTimeout(async () => {
-      try {
-        const code = await sock.requestPairingCode(phone);
-        console.log(`\n┌──────────────────────────────────┐`);
-        console.log(`│  📱 WhatsApp Pairing Code         │`);
-        console.log(`│                                  │`);
-        console.log(`│       ${code}          │`);
-        console.log(`│                                  │`);
-        console.log(`│  WhatsApp → Setelan →            │`);
-        console.log(`│  Perangkat Tertaut →             │`);
-        console.log(`│  Tautkan dengan nomor telepon    │`);
-        console.log(`└──────────────────────────────────┘\n`);
-      } catch (err) {
-        console.error('[WA] Gagal request pairing code:', err.message);
-        console.log('[WA] Fallback ke QR code...');
-      }
-    }, 3000);
-  }
+  const usePhone = !state.creds.registered && config.whatsapp.phoneNumber;
+  const pairingPhone = usePhone ? config.whatsapp.phoneNumber.replace(/[^0-9]/g, '') : null;
+  let pairingCodeRequested = false;
  
   // ─── Connection handler ──────────────────────────────
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
  
     if (qr) {
-      if (config.whatsapp.phoneNumber) {
-        // Sudah pakai pairing code — QR sebagai fallback saja
-        console.log('[WA] QR tersedia sebagai fallback (pairing code lebih dianjurkan)');
-      } else {
+      if (usePhone && !pairingCodeRequested) {
+        // Request pairing code saat QR pertama kali tersedia (socket sudah siap auth)
+        pairingCodeRequested = true;
+        try {
+          const code = await sock.requestPairingCode(pairingPhone);
+          console.log(`\n┌──────────────────────────────────┐`);
+          console.log(`│  📱 WhatsApp Pairing Code         │`);
+          console.log(`│                                  │`);
+          console.log(`│       ${code}          │`);
+          console.log(`│                                  │`);
+          console.log(`│  WhatsApp → Setelan →            │`);
+          console.log(`│  Perangkat Tertaut →             │`);
+          console.log(`│  Tautkan dengan nomor telepon    │`);
+          console.log(`└──────────────────────────────────┘\n`);
+        } catch (err) {
+          console.error('[WA] Gagal request pairing code:', err.message);
+          console.log('[WA] Fallback ke QR code...');
+          setQR(qr);
+          qrcode.generate(qr, { small: true });
+        }
+      } else if (!usePhone) {
         // Mode QR biasa
         setQR(qr);
         console.log('\n📱 QR code tersedia! Buka URL Railway kamu di browser untuk scan.\n');
