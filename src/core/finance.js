@@ -7,7 +7,8 @@ const { getDb } = require('./database');
 // ─── Category Detection ───────────────────────────────────
  
 const KATEGORI_KEYWORDS = {
-  makan:     ['makan', 'minum', 'resto', 'restoran', 'warteg', 'warung', 'kafe', 'cafe', 'coffee', 'snack', 'jajan', 'lunch', 'dinner', 'breakfast', 'sarapan', 'nasi', 'ayam', 'bakso', 'mie', 'pizza', 'burger', 'soto', 'pecel', 'gado'],
+  makan:     ['makan', 'minum', 'resto', 'restoran', 'warteg', 'warung', 'kafe', 'cafe', 'coffee', 'lunch', 'dinner', 'breakfast', 'sarapan', 'nasi', 'ayam', 'bakso', 'mie', 'pizza', 'burger', 'soto', 'pecel', 'gado'],
+  jajan:     ['jajan', 'snack', 'cemilan', 'gorengan', 'es', 'minuman', 'boba', 'thai tea', 'kopi', 'starbucks', 'indomie', 'mie cup', 'chiki', 'chitato'],
   transport: ['ojek', 'gojek', 'grab', 'maxim', 'taxi', 'taksi', 'bensin', 'bbm', 'parkir', 'toll', 'tol', 'bus', 'kereta', 'commuter', 'angkot', 'inpres', 'uber'],
   belanja:   ['belanja', 'shopee', 'tokopedia', 'lazada', 'toko', 'mall', 'supermarket', 'indomaret', 'alfamart', 'hypermart', 'carrefour', 'beli'],
   tagihan:   ['listrik', 'air', 'pdam', 'internet', 'wifi', 'pulsa', 'token', 'tagihan', 'iuran', 'sewa', 'kos', 'kontrakan', 'cicilan', 'kredit', 'pln'],

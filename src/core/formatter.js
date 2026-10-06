@@ -127,7 +127,7 @@ function formatKategori(rows, period) {
   const label = labelPeriod[period] || 'Bulan Ini';
  
   const ICON = {
-    makan: '🍽️', transport: '🚗', belanja: '🛍️', tagihan: '💡',
+    makan: '🍽️', jajan: '🧃', transport: '🚗', belanja: '🛍️', tagihan: '💡',
     hiburan: '🎮', kesehatan: '🏥', gaji: '💼', bonus: '🎁',
     transfer: '💸', umum: '📌',
   };

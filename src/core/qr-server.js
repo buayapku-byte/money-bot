@@ -506,7 +506,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   }
  
   const KAT_ICON = {
-    makan:'🍽️', transport:'🚗', belanja:'🛍️', tagihan:'💡',
+    makan:'🍽️', jajan:'🧃', transport:'🚗', belanja:'🛍️', tagihan:'💡',
     hiburan:'🎮', kesehatan:'🏥', gaji:'💼', bonus:'🎁',
     transfer:'💸', umum:'📌',
   };
