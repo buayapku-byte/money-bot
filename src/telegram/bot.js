@@ -6,13 +6,14 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   editTransaction,
   addRecurring, getRecurring, deleteRecurring,
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
-  fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES } = require('../core/finance');
+  fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES,
+  getExportData, generateCsv, getAnalisis, getKekayaan } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
   formatRupiah, formatSaldo, formatTransaksi,
   formatHistory, formatLaporan, formatKategori, formatGoals,
-  formatBudgets, formatRecurring,
+  formatBudgets, formatRecurring, formatAnalisis, formatKekayaan,
 } = require('../core/formatter');
 const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
   'Juli','Agustus','September','Oktober','November','Desember'];
@@ -883,6 +884,58 @@ function createTelegramBot() {
       return replyMd(ctx, out);
     } catch (err) {
       console.error('[TG /kurs]', err);
+      replyError(ctx, err.message || 'Terjadi error.');
+    }
+  });
+ 
+  // ─── /export [YYYY-MM] ────────────────────────────────
+  bot.command('export', async (ctx) => {
+    try {
+      const wallet = getWallet(ctx);
+      const args = ctx.message.text.split(/\s+/).slice(1);
+      const monthArg = args[0];
+      let monthStr = null;
+      if (monthArg && /^\d{4}-\d{2}$/.test(monthArg)) monthStr = monthArg;
+ 
+      const rows = getExportData(wallet.id, monthStr);
+      const month = monthStr || new Date().toISOString().slice(0, 7);
+ 
+      if (!rows.length) {
+        return replyMd(ctx, `📭 Tidak ada transaksi untuk periode *${month}*`);
+      }
+ 
+      const csv = generateCsv(rows);
+      const filename = `transaksi_${month}.csv`;
+      await ctx.replyWithDocument(
+        { source: Buffer.from(csv, 'utf-8'), filename },
+        { caption: `📊 Export *${month}* — ${rows.length} transaksi`, parse_mode: 'Markdown' }
+      );
+    } catch (err) {
+      console.error('[TG /export]', err);
+      replyError(ctx, err.message || 'Terjadi error.');
+    }
+  });
+ 
+  // ─── /analisis ────────────────────────────────────────
+  bot.command('analisis', async (ctx) => {
+    try {
+      const wallet = getWallet(ctx);
+      const data = getAnalisis(wallet.id);
+      replyMd(ctx, formatAnalisis(data));
+    } catch (err) {
+      console.error('[TG /analisis]', err);
+      replyError(ctx, err.message || 'Terjadi error.');
+    }
+  });
+ 
+  // ─── /kekayaan ────────────────────────────────────────
+  bot.command('kekayaan', async (ctx) => {
+    try {
+      const wallet = getWallet(ctx);
+      const data = getKekayaan(wallet.id);
+      replyMd(ctx, formatKekayaan(data));
+    } catch (err) {
+      console.error('[TG /kekayaan]', err);
       replyError(ctx, err.message || 'Terjadi error.');
     }
   });

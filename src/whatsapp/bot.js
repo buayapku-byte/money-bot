@@ -18,7 +18,8 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   editTransaction,
   addRecurring, getRecurring, deleteRecurring,
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
-  fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES } = require('../core/finance');
+  fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES,
+  getExportData, generateCsv, getAnalisis, getKekayaan } = require('../core/finance');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -31,6 +32,8 @@ const {
   formatGoals,
   formatBudgets,
   formatRecurring,
+  formatAnalisis,
+  formatKekayaan,
 } = require('../core/formatter');
 const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
   'Juli','Agustus','September','Oktober','November','Desember'];
@@ -953,9 +956,82 @@ async function routeMessage(sock, msg, text, senderName) {
     case 'currency':
       return handleKurs(sock, msg, args);
  
+    case 'export':
+      return handleExport(sock, msg, args);
+ 
+    case 'analisis':
+      return handleAnalisis(sock, msg, args);
+ 
+    case 'kekayaan':
+    case 'networth':
+      return handleKekayaan(sock, msg, args);
+ 
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
       break;
+  }
+}
+ 
+// ─── Export CSV ───────────────────────────────────────────
+ 
+async function handleExport(sock, msg, args) {
+  const chatId = msg.key.remoteJid;
+  const wallet = getOrCreateWallet('whatsapp', chatId, '');
+  const walletId = resolveWalletId(wallet.id);
+ 
+  const monthArg = args[0];
+  let monthStr = null;
+  if (monthArg && /^\d{4}-\d{2}$/.test(monthArg)) monthStr = monthArg;
+ 
+  const rows = getExportData(walletId, monthStr);
+  const month = monthStr || new Date().toISOString().slice(0, 7);
+ 
+  if (!rows.length) {
+    return sock.sendMessage(chatId, { text: `📭 Tidak ada transaksi untuk periode *${month}*` });
+  }
+ 
+  const csv = generateCsv(rows);
+  // WA tidak support kirim file via Baileys dengan mudah — kirim teks ringkas
+  const lines = csv.split('\n');
+  const preview = lines.slice(0, Math.min(11, lines.length)).join('\n');
+  const more = rows.length > 10 ? `\n_...dan ${rows.length - 10} baris lagi_\n\n_📌 Untuk file CSV lengkap, gunakan Telegram (@bot)_` : '';
+ 
+  return sock.sendMessage(chatId, {
+    text: `📊 *Export ${month}* — ${rows.length} transaksi\n\n\`\`\`\n${preview}\n\`\`\`${more}`,
+  });
+}
+ 
+// ─── Analisis AI ──────────────────────────────────────────
+ 
+async function handleAnalisis(sock, msg, args) {
+  const chatId = msg.key.remoteJid;
+  const wallet = getOrCreateWallet('whatsapp', chatId, '');
+  const walletId = resolveWalletId(wallet.id);
+ 
+  try {
+    const data = getAnalisis(walletId);
+    const text = formatAnalisis(data);
+    return sock.sendMessage(chatId, { text });
+  } catch (err) {
+    console.error('[WA !analisis]', err);
+    return sock.sendMessage(chatId, { text: `❌ ${err.message || 'Terjadi error.'}` });
+  }
+}
+ 
+// ─── Net Worth / Kekayaan ─────────────────────────────────
+ 
+async function handleKekayaan(sock, msg, args) {
+  const chatId = msg.key.remoteJid;
+  const wallet = getOrCreateWallet('whatsapp', chatId, '');
+  const walletId = resolveWalletId(wallet.id);
+ 
+  try {
+    const data = getKekayaan(walletId);
+    const text = formatKekayaan(data);
+    return sock.sendMessage(chatId, { text });
+  } catch (err) {
+    console.error('[WA !kekayaan]', err);
+    return sock.sendMessage(chatId, { text: `❌ ${err.message || 'Terjadi error.'}` });
   }
 }
  

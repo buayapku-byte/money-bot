@@ -276,6 +276,109 @@ function formatRecurring(list, prefix = '/') {
   return msg;
 }
  
+/**
+ * Format hasil analisis keuangan bulanan
+ */
+function formatAnalisis(data) {
+  const { masukIni, keluarIni, savingsRate, trenKeluar, hariBoros,
+    perKategori, hariUnik, rataHari, jumlahTransaksi, bulan } = data;
+ 
+  const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
+    'Juli','Agustus','September','Oktober','November','Desember'];
+  const [year, month] = bulan.split('-');
+  const bulanLabel = `${NAMA_BULAN[parseInt(month) - 1]} ${year}`;
+ 
+  let msg = `🧠 *Analisis Keuangan — ${bulanLabel}*\n\n`;
+ 
+  msg += `💰 Pemasukan:   *${formatRupiah(masukIni)}*\n`;
+  msg += `💸 Pengeluaran: *${formatRupiah(keluarIni)}*\n`;
+  msg += `📊 Savings Rate: *${savingsRate}%*  ${savingsRate >= 30 ? '🟢' : savingsRate >= 10 ? '🟡' : '🔴'}\n`;
+ 
+  if (trenKeluar !== null) {
+    const icon  = trenKeluar > 0 ? '📈' : '📉';
+    const label = trenKeluar > 0 ? `naik ${trenKeluar}%` : `turun ${Math.abs(trenKeluar)}%`;
+    msg += `${icon} Pengeluaran vs bulan lalu: *${label}*\n`;
+  }
+ 
+  msg += `\n📋 *${jumlahTransaksi} transaksi* dalam ${hariUnik} hari aktif\n`;
+  if (rataHari > 0) msg += `📌 Rata-rata pengeluaran/hari: *${formatRupiah(rataHari)}*\n`;
+  if (hariBoros)    msg += `📅 Hari paling boros: *${hariBoros}*\n`;
+ 
+  if (perKategori.length > 0) {
+    msg += `\n📊 *Top Pengeluaran:*\n`;
+    perKategori.slice(0, 5).forEach((k, i) => {
+      const persen = keluarIni > 0 ? Math.round((k.total / keluarIni) * 100) : 0;
+      msg += `${i + 1}. *${k.category}* — ${formatRupiah(k.total)} (${persen}%) · ${k.jumlah}x\n`;
+    });
+  }
+ 
+  msg += `\n💡 *Saran:*\n`;
+  if (savingsRate < 0) {
+    msg += `🚨 Pengeluaran melebihi pemasukan! Segera kurangi pengeluaran.\n`;
+  } else if (savingsRate < 20) {
+    msg += `⚠️ Savings rate ${savingsRate}% — targetkan minimal 20% dari pemasukan.\n`;
+  } else if (savingsRate >= 50) {
+    msg += `🎉 Savings rate ${savingsRate}% — luar biasa! Pertahankan terus.\n`;
+  } else {
+    msg += `✅ Savings rate ${savingsRate}% — sudah bagus!\n`;
+  }
+ 
+  if (trenKeluar !== null && trenKeluar >= 30) {
+    msg += `⚠️ Pengeluaran naik *${trenKeluar}%* dari bulan lalu — perlu diwaspadai.\n`;
+  } else if (trenKeluar !== null && trenKeluar <= -20) {
+    msg += `🎉 Berhasil hemat *${Math.abs(trenKeluar)}%* dibanding bulan lalu!\n`;
+  }
+ 
+  if (perKategori.length > 0) {
+    const top = perKategori[0];
+    const persen = keluarIni > 0 ? Math.round((top.total / keluarIni) * 100) : 0;
+    if (persen >= 40) {
+      msg += `💡 *${top.category}* makan ${persen}% budget — coba batasi dengan /budget.\n`;
+    }
+  }
+ 
+  return msg.trim();
+}
+ 
+/**
+ * Format snapshot net worth / kekayaan
+ */
+function formatKekayaan(data) {
+  const { saldo, totalTabungan, totalKekayaan, goals, usdRate } = data;
+ 
+  const toUsdStr = (idr) => {
+    const rate = usdRate || 15750;
+    return '$' + Math.round(idr / rate).toLocaleString('en-US');
+  };
+ 
+  const rateLabel = usdRate
+    ? `_Kurs: 1 USD = ${formatRupiah(Math.round(usdRate))}_`
+    : `_Kurs: 1 USD = ${formatRupiah(15750)} (default)_`;
+ 
+  const tanggal = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+ 
+  let msg = `💎 *Net Worth Snapshot*\n${rateLabel}\n\n`;
+ 
+  msg += `💰 Saldo Aktif:   *${formatRupiah(saldo)}* _(${toUsdStr(saldo)})_\n`;
+  msg += `🎯 Total Tabungan: *${formatRupiah(totalTabungan)}* _(${toUsdStr(totalTabungan)})_\n`;
+  msg += `─────────────────\n`;
+ 
+  const netSign = totalKekayaan >= 0 ? '💎' : '⚠️';
+  msg += `${netSign} *Net Worth: ${formatRupiah(totalKekayaan)}* _(${toUsdStr(totalKekayaan)})_\n`;
+ 
+  if (goals.length > 0) {
+    msg += `\n📊 *Rincian Goals:*\n`;
+    goals.forEach(g => {
+      const persen = g.target_amount > 0 ? Math.min(100, Math.round((g.current_amount / g.target_amount) * 100)) : 0;
+      const status = g.is_completed || persen >= 100 ? '✅' : '🎯';
+      msg += `${status} *${g.name}*: ${formatRupiah(g.current_amount)} _(${persen}%)_\n`;
+    });
+  }
+ 
+  msg += `\n_Snapshot per ${tanggal}_`;
+  return msg.trim();
+}
+ 
 module.exports = {
   formatRupiah,
   formatTanggal,
@@ -289,4 +392,6 @@ module.exports = {
   formatGoals,
   formatBudgets,
   formatRecurring,
+  formatAnalisis,
+  formatKekayaan,
 };

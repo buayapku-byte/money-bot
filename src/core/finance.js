@@ -619,6 +619,138 @@ function convertToIdr(walletId, amount, currencyCode) {
   throw new Error(`Kurs ${upper} tidak tersedia.\nCoba: !kurs update untuk refresh, atau !kurs set ${upper} [nilai ke IDR]`);
 }
  
+// ─── Export CSV ───────────────────────────────────────────
+ 
+/**
+ * Ambil data transaksi untuk export per bulan
+ * @param {string} walletId
+ * @param {string|null} monthStr - Format YYYY-MM, null = bulan ini
+ * @returns {Array} transaksi
+ */
+function getExportData(walletId, monthStr = null) {
+  const db = getDb();
+  const month = monthStr || new Date().toISOString().slice(0, 7);
+  return db.prepare(`
+    SELECT id, date, type, amount, category, note, created_by, created_at
+    FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ?
+    ORDER BY date ASC, created_at ASC
+  `).all(walletId, month);
+}
+ 
+/**
+ * Generate string CSV dari array transaksi
+ * @param {Array} rows - hasil getExportData
+ * @returns {string} CSV content
+ */
+function generateCsv(rows) {
+  const header = 'ID,Tanggal,Tipe,Jumlah,Kategori,Catatan,Dicatat Oleh';
+  const lines = rows.map(r => {
+    const tipe = r.type === 'in' ? 'Pemasukan' : 'Pengeluaran';
+    const note = r.note ? `"${String(r.note).replace(/"/g, '""')}"` : '';
+    return `${r.id},${r.date},${tipe},${r.amount},${r.category},${note},${r.created_by || ''}`;
+  });
+  return [header, ...lines].join('\n');
+}
+ 
+// ─── Analisis AI ──────────────────────────────────────────
+ 
+/**
+ * Analisis pola keuangan bulan ini
+ * @param {string} walletId
+ * @returns {object} analisis lengkap
+ */
+function getAnalisis(walletId) {
+  const db = getDb();
+  const bulanIni = new Date().toISOString().slice(0, 7);
+ 
+  const d = new Date();
+  d.setMonth(d.getMonth() - 1);
+  const bulanLalu = d.toISOString().slice(0, 7);
+ 
+  const transBulanIni = db.prepare(`
+    SELECT * FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ?
+    ORDER BY date ASC
+  `).all(walletId, bulanIni);
+ 
+  const ringkasLalu = db.prepare(`
+    SELECT type, SUM(amount) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ?
+    GROUP BY type
+  `).all(walletId, bulanLalu);
+ 
+  const masukIni  = transBulanIni.filter(t => t.type === 'in').reduce((s, t)  => s + t.amount, 0);
+  const keluarIni = transBulanIni.filter(t => t.type === 'out').reduce((s, t) => s + t.amount, 0);
+  const masukLalu  = ringkasLalu.find(r => r.type === 'in')?.total  || 0;
+  const keluarLalu = ringkasLalu.find(r => r.type === 'out')?.total || 0;
+ 
+  const perKategori = db.prepare(`
+    SELECT category, SUM(amount) AS total, COUNT(*) AS jumlah
+    FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ? AND type = 'out'
+    GROUP BY category
+    ORDER BY total DESC
+  `).all(walletId, bulanIni);
+ 
+  const savingsRate = masukIni > 0 ? Math.round(((masukIni - keluarIni) / masukIni) * 100) : 0;
+  const trenKeluar  = keluarLalu > 0 ? Math.round(((keluarIni - keluarLalu) / keluarLalu) * 100) : null;
+ 
+  const perHari = db.prepare(`
+    SELECT strftime('%w', date) AS hari_minggu, SUM(amount) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ? AND type = 'out'
+    GROUP BY hari_minggu
+    ORDER BY total DESC
+    LIMIT 1
+  `).get(walletId, bulanIni);
+ 
+  const HARI = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+  const hariBoros = perHari ? HARI[parseInt(perHari.hari_minggu)] : null;
+ 
+  const hariUnik = new Set(transBulanIni.filter(t => t.type === 'out').map(t => t.date)).size;
+  const rataHari = hariUnik > 0 ? Math.round(keluarIni / hariUnik) : 0;
+ 
+  return {
+    bulan: bulanIni,
+    masukIni, keluarIni, masukLalu, keluarLalu,
+    savingsRate, trenKeluar, hariBoros,
+    perKategori, hariUnik, rataHari,
+    jumlahTransaksi: transBulanIni.length,
+  };
+}
+ 
+// ─── Net Worth / Kekayaan ─────────────────────────────────
+ 
+/**
+ * Snapshot kekayaan: saldo + total tabungan goals
+ * @param {string} walletId
+ * @returns {object}
+ */
+function getKekayaan(walletId) {
+  const db = getDb();
+ 
+  const masukRow  = db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE wallet_id=? AND type='in'`).get(walletId);
+  const keluarRow = db.prepare(`SELECT COALESCE(SUM(amount),0) AS total FROM transactions WHERE wallet_id=? AND type='out'`).get(walletId);
+  const saldo = masukRow.total - keluarRow.total;
+ 
+  const goals = db.prepare(`SELECT name, current_amount, target_amount, is_completed FROM goals WHERE wallet_id=?`).all(walletId);
+  const totalTabungan = goals.reduce((s, g) => s + g.current_amount, 0);
+ 
+  let usdRate = null;
+  try {
+    const row = db.prepare('SELECT rate_to_idr FROM live_rates WHERE code=?').get('USD');
+    if (row) usdRate = row.rate_to_idr;
+  } catch (_) {}
+ 
+  return {
+    saldo, totalTabungan,
+    totalKekayaan: saldo + totalTabungan,
+    goals, usdRate,
+  };
+}
+ 
 module.exports = {
   addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
@@ -627,4 +759,7 @@ module.exports = {
   getWeeklyAnalysis,
   fetchLiveRates, getLiveRateUpdatedAt,
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS, POPULAR_CURRENCIES,
+  getExportData, generateCsv,
+  getAnalisis,
+  getKekayaan,
 };
