@@ -32,6 +32,23 @@ const {
   formatBudgets,
   formatRecurring,
 } = require('../core/formatter');
+const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
+  'Juli','Agustus','September','Oktober','November','Desember'];
+ 
+/**
+ * Format "2026-10" jadi "Oktober 2026 (1 - 31 Okt 2026)"
+ * @param {string} monthStr - format YYYY-MM
+ * @returns {string}
+ */
+function formatBulan(monthStr) {
+  const [year, mon] = monthStr.split('-').map(Number);
+  const lastDay = new Date(year, mon, 0).getDate();
+  const nama = NAMA_BULAN[mon - 1];
+  const singkat = nama.slice(0, 3);
+  return nama + ' ' + year + ' (1 – ' + lastDay + ' ' + singkat + ' ' + year + ')';
+}
+ 
+ 
  
 // ─── State ────────────────────────────────────────────────
 let waSocket = null;
@@ -549,7 +566,7 @@ async function handleBudget(sock, msg, args) {
       `✅ *Budget diset!*\n\n` +
       `Kategori: *${budget.category}*\n` +
       `Budget: *${formatRupiah(budget.amount)}*\n` +
-      `Bulan: ${budget.month}\n\n` +
+      `Periode: ${formatBulan(budget.month)}\n\n` +
       `_Kamu akan dapat peringatan saat mencapai 80% dan 100%._`
     );
   } catch (err) {
