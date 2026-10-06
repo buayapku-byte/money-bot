@@ -118,6 +118,30 @@ function createTables() {
       created_at    TEXT DEFAULT (datetime('now', 'localtime')),
       FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
     );
+ 
+    -- ─────────────────────────────────────────────────────
+    -- Wallet Links: berbagi wallet (share wallet)
+    -- member_id → primary_id (member ikut wallet primary)
+    -- ─────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS wallet_links (
+      member_id   TEXT PRIMARY KEY,
+      primary_id  TEXT NOT NULL,
+      linked_at   TEXT DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (member_id)  REFERENCES wallets(id) ON DELETE CASCADE,
+      FOREIGN KEY (primary_id) REFERENCES wallets(id) ON DELETE CASCADE
+    );
+ 
+    -- ─────────────────────────────────────────────────────
+    -- Invite Codes: kode undangan buat share wallet
+    -- ─────────────────────────────────────────────────────
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      code        TEXT PRIMARY KEY,
+      wallet_id   TEXT NOT NULL,
+      expires_at  TEXT NOT NULL,
+      used        INTEGER DEFAULT 0,
+      created_at  TEXT DEFAULT (datetime('now', 'localtime')),
+      FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
+    );
   `);
 }
  
@@ -160,4 +184,101 @@ function getDb() {
   return db;
 }
  
-module.exports = { initDatabase, getOrCreateWallet, getDb };
+/**
+ * Resolve wallet ID ke primary wallet-nya (kalau sedang linked)
+ * Kalau tidak linked, return walletId itu sendiri
+ * @param {string} walletId
+ * @returns {string} primaryWalletId
+ */
+function resolveWalletId(walletId) {
+  const link = db.prepare('SELECT primary_id FROM wallet_links WHERE member_id = ?').get(walletId);
+  return link ? link.primary_id : walletId;
+}
+ 
+/**
+ * Buat invite code untuk share wallet (berlaku 24 jam)
+ * @param {string} walletId - Wallet yang mau di-share
+ * @returns {string} code
+ */
+function createInviteCode(walletId) {
+  // Hapus kode lama yang expired atau belum dipakai milik wallet ini
+  db.prepare(`
+    DELETE FROM invite_codes
+    WHERE wallet_id = ? AND (used = 1 OR expires_at < datetime('now', 'localtime'))
+  `).run(walletId);
+ 
+  // Generate kode 6 karakter uppercase alphanumeric
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code;
+  do {
+    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+  } while (db.prepare('SELECT 1 FROM invite_codes WHERE code = ?').get(code));
+ 
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    .toISOString()
+    .replace('T', ' ')
+    .substring(0, 19);
+ 
+  db.prepare(`
+    INSERT INTO invite_codes (code, wallet_id, expires_at)
+    VALUES (?, ?, ?)
+  `).run(code, walletId, expiresAt);
+ 
+  return code;
+}
+ 
+/**
+ * Gunakan invite code untuk menggabungkan wallet
+ * @param {string} memberWalletId - Wallet yang mau bergabung
+ * @param {string} code - Kode undangan
+ * @returns {object} primary wallet
+ * @throws {Error} jika kode tidak valid/expired
+ */
+function useInviteCode(memberWalletId, code) {
+  const invite = db.prepare(`
+    SELECT * FROM invite_codes
+    WHERE code = ?
+      AND used = 0
+      AND expires_at > datetime('now', 'localtime')
+  `).get(code.toUpperCase());
+ 
+  if (!invite) throw new Error('Kode tidak valid atau sudah kadaluarsa.');
+  if (invite.wallet_id === memberWalletId) throw new Error('Tidak bisa bergabung ke wallet sendiri.');
+ 
+  // Tandai kode sudah dipakai
+  db.prepare('UPDATE invite_codes SET used = 1 WHERE code = ?').run(code.toUpperCase());
+ 
+  // Buat atau update link
+  db.prepare(`
+    INSERT OR REPLACE INTO wallet_links (member_id, primary_id)
+    VALUES (?, ?)
+  `).run(memberWalletId, invite.wallet_id);
+ 
+  const primary = db.prepare('SELECT * FROM wallets WHERE id = ?').get(invite.wallet_id);
+  console.log(`[DB] Wallet ${memberWalletId} linked ke ${invite.wallet_id}`);
+  return primary;
+}
+ 
+/**
+ * Pisahkan wallet dari primary (unlink)
+ * @param {string} memberWalletId
+ * @returns {object|null} link yang dihapus, atau null kalau memang tidak linked
+ */
+function unlinkWallet(memberWalletId) {
+  const link = db.prepare('SELECT * FROM wallet_links WHERE member_id = ?').get(memberWalletId);
+  if (!link) return null;
+ 
+  db.prepare('DELETE FROM wallet_links WHERE member_id = ?').run(memberWalletId);
+  console.log(`[DB] Wallet ${memberWalletId} unlinked dari ${link.primary_id}`);
+  return link;
+}
+ 
+module.exports = {
+  initDatabase,
+  getOrCreateWallet,
+  getDb,
+  resolveWalletId,
+  createInviteCode,
+  useInviteCode,
+  unlinkWallet,
+};
