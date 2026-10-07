@@ -16,7 +16,9 @@ const {
   formatHistory, formatLaporan, formatKategori, formatGoals,
   formatBudgets, formatRecurring, formatAnalisis, formatKekayaan,
 } = require('../core/formatter');
-const { buildChartConfig, fetchGrafikBuffer, buildGrafikCaption } = require('../core/grafik');
+const { buildChartConfig, fetchGrafikBuffer, buildGrafikCaption,
+        buildTrendConfig, buildTrendCaption } = require('../core/grafik');
+const { ocrImage, parseStruk } = require('../core/ocr');
 const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
   'Juli','Agustus','September','Oktober','November','Desember'];
  
@@ -979,6 +981,34 @@ function createTelegramBot() {
     }
   });
  
+  // ─── /trend ───────────────────────────────────────────
+  // Usage: /trend | /trend 3 | /trend 6 | /trend 12
+  bot.command('trend', async (ctx) => {
+    try {
+      const args   = ctx.message.text.split(/\s+/).slice(1);
+      const months = parseInt(args[0]) || 6;
+      if (![3, 6, 12].includes(months)) {
+        return replyError(ctx,
+          `Jumlah bulan tidak valid.\nGunakan: \`/trend 3\`, \`/trend 6\`, atau \`/trend 12\``
+        );
+      }
+      const wallet = getWallet(ctx);
+      const result = buildTrendConfig(wallet.id, months, wallet.lang);
+      if (!result) {
+        return replyMd(ctx, wallet.lang === 'en'
+          ? `📭 No data for the last ${months} months.`
+          : `📭 Belum ada data untuk ${months} bulan terakhir.`);
+      }
+      await ctx.replyWithChatAction('upload_photo');
+      const buffer  = await fetchGrafikBuffer(result.config);
+      const caption = buildTrendCaption(result.rows, months, wallet.lang);
+      await ctx.replyWithPhoto({ source: buffer }, { caption, parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error('[TG /trend]', err);
+      replyError(ctx, 'Gagal buat grafik trend. Coba lagi.');
+    }
+  });
+ 
   // ─── /bahasa ──────────────────────────────────────────
   // Usage: /bahasa        → tampilkan bahasa aktif
   //        /bahasa id     → ganti ke Bahasa Indonesia
@@ -1006,6 +1036,79 @@ function createTelegramBot() {
     }
   });
  
+  // ─── Foto/Struk OCR ───────────────────────────────────
+  // Trigger: kirim foto dengan caption "struk" / "bon" / "receipt" / "catat"
+  // Atau foto dengan caption kosong → tanya user apakah mau OCR
+  bot.on('photo', async (ctx) => {
+    try {
+      const caption = (ctx.message.caption || '').toLowerCase().trim();
+      const isOcr   = /\b(struk|bon|receipt|nota|catat)\b/.test(caption);
+ 
+      if (!isOcr) {
+        // Foto tanpa keyword — diam saja (jangan spam)
+        return;
+      }
+ 
+      const wallet = getWallet(ctx);
+      await ctx.replyWithChatAction('typing');
+ 
+      // Ambil foto resolusi tertinggi
+      const photos  = ctx.message.photo;
+      const fileId  = photos[photos.length - 1].file_id;
+      const fileUrl = await ctx.telegram.getFileLink(fileId);
+ 
+      // Download foto ke buffer
+      const imgBuffer = await new Promise((resolve, reject) => {
+        const mod = fileUrl.href.startsWith('https') ? require('https') : require('http');
+        mod.get(fileUrl.href, (res) => {
+          const chunks = [];
+          res.on('data', c => chunks.push(c));
+          res.on('end', () => resolve(Buffer.concat(chunks)));
+        }).on('error', reject);
+      });
+ 
+      await ctx.replyWithChatAction('typing');
+      const rawText = await ocrImage(imgBuffer, 'image/jpeg');
+ 
+      if (!rawText.trim()) {
+        return replyMd(ctx, wallet.lang === 'en'
+          ? '❌ Could not read text from the image. Try a clearer photo.'
+          : '❌ Tidak bisa baca teks dari foto. Coba foto yang lebih jelas.');
+      }
+ 
+      const { jumlah, catatan } = parseStruk(rawText);
+ 
+      if (!jumlah || jumlah < 100) {
+        return replyMd(ctx, wallet.lang === 'en'
+          ? `❌ No total amount found.\n\n_OCR result:_\n\`\`\`\n${rawText.slice(0, 300)}\n\`\`\``
+          : `❌ Tidak ketemu jumlah total.\n\n_Hasil OCR:_\n\`\`\`\n${rawText.slice(0, 300)}\n\`\`\``);
+      }
+ 
+      // Catat otomatis sebagai pengeluaran
+      const today = new Date().toISOString().slice(0, 10);
+      const tx = addTransaction(wallet.id, {
+        type:     'out',
+        amount:   jumlah,
+        category: 'Belanja',
+        note:     catatan || 'Struk belanja',
+        date:     today,
+      });
+ 
+      const budgetAlert = checkBudgetAlert(wallet.id, 'Belanja');
+      const formatted   = formatTransaksi(tx, wallet.lang);
+      let msg = wallet.lang === 'en'
+        ? `✅ *Receipt scanned & recorded!*\n\n${formatted}`
+        : `✅ *Struk berhasil dibaca & dicatat!*\n\n${formatted}`;
+ 
+      if (budgetAlert) msg += `\n\n⚠️ ${budgetAlert}`;
+      await replyMd(ctx, msg);
+ 
+    } catch (err) {
+      console.error('[TG OCR photo]', err);
+      replyError(ctx, 'Gagal proses foto. Coba lagi.');
+    }
+  });
+ 
   // ─── Error handler global ─────────────────────────────
   bot.catch((err, ctx) => {
     console.error(`[TG Error] ${ctx.updateType}:`, err);
@@ -1014,7 +1117,7 @@ function createTelegramBot() {
  
   // ─── Launch ───────────────────────────────────────────
   bot.launch({
-    allowedUpdates: ['message', 'callback_query'],
+    allowedUpdates: ['message', 'callback_query', 'channel_post'],
   });
  
   console.log('✅ Telegram bot aktif');

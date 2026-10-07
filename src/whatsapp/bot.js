@@ -36,7 +36,9 @@ const {
   formatAnalisis,
   formatKekayaan,
 } = require('../core/formatter');
-const { buildChartConfig, fetchGrafikBuffer, buildGrafikCaption } = require('../core/grafik');
+const { buildChartConfig, fetchGrafikBuffer, buildGrafikCaption,
+        buildTrendConfig, buildTrendCaption } = require('../core/grafik');
+const { ocrImage, parseStruk } = require('../core/ocr');
 const NAMA_BULAN = ['Januari','Februari','Maret','April','Mei','Juni',
   'Juli','Agustus','September','Oktober','November','Desember'];
  
@@ -945,6 +947,98 @@ async function handleGrafik(sock, msg, args) {
   }
 }
  
+// ─── Trend Bulanan ────────────────────────────────────────
+ 
+async function handleTrend(sock, msg, args) {
+  const chatId = msg.key.remoteJid;
+  try {
+    const months = parseInt(args[0]) || 6;
+    if (![3, 6, 12].includes(months)) {
+      const p = config.wa.prefix;
+      return reply(sock, msg,
+        `❌ Jumlah bulan tidak valid.\nGunakan:\n${p}trend 3\n${p}trend 6\n${p}trend 12`
+      );
+    }
+    const wallet = getWallet(chatId);
+    const result = buildTrendConfig(wallet.id, months, wallet.lang);
+    if (!result) {
+      return reply(sock, msg, wallet.lang === 'en'
+        ? `📭 No data for the last ${months} months.`
+        : `📭 Belum ada data untuk ${months} bulan terakhir.`);
+    }
+    const buffer  = await fetchGrafikBuffer(result.config);
+    const caption = buildTrendCaption(result.rows, months, wallet.lang);
+    await sock.sendMessage(chatId, { image: buffer, caption }, { quoted: msg });
+  } catch (err) {
+    console.error('[WA !trend]', err);
+    reply(sock, msg, '❌ Gagal buat grafik trend. Coba lagi.');
+  }
+}
+ 
+// ─── OCR Struk ────────────────────────────────────────────
+ 
+/**
+ * Handle pesan gambar yang dikirim dengan caption "struk"/"bon"/"receipt"
+ * @param {object} sock - WA socket
+ * @param {object} msg  - pesan WA lengkap (harus imageMessage)
+ */
+async function handleImageOcr(sock, msg) {
+  const chatId  = msg.key.remoteJid;
+  const caption = (msg.message?.imageMessage?.caption || '').toLowerCase().trim();
+  const isOcr   = /\b(struk|bon|receipt|nota|catat)\b/.test(caption);
+  if (!isOcr) return; // abaikan foto tanpa keyword
+ 
+  const wallet = getWallet(chatId);
+ 
+  try {
+    reply(sock, msg, wallet.lang === 'en'
+      ? '🔍 Reading receipt...'
+      : '🔍 Memproses struk...');
+ 
+    // Download gambar via baileys
+    const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+    const imgBuffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }) });
+ 
+    const rawText = await ocrImage(imgBuffer, 'image/jpeg');
+ 
+    if (!rawText.trim()) {
+      return reply(sock, msg, wallet.lang === 'en'
+        ? '❌ Could not read text from image. Try a clearer photo.'
+        : '❌ Tidak bisa baca teks dari foto. Coba foto yang lebih jelas.');
+    }
+ 
+    const { jumlah, catatan } = parseStruk(rawText);
+ 
+    if (!jumlah || jumlah < 100) {
+      const preview = rawText.slice(0, 200).replace(/\n/g, ' ');
+      return reply(sock, msg, wallet.lang === 'en'
+        ? `❌ No total amount found.\n\nOCR preview: ${preview}`
+        : `❌ Tidak ketemu jumlah total.\n\nHasil OCR: ${preview}`);
+    }
+ 
+    const today = new Date().toISOString().slice(0, 10);
+    const tx = addTransaction(wallet.id, {
+      type:     'out',
+      amount:   jumlah,
+      category: 'Belanja',
+      note:     catatan || 'Struk belanja',
+      date:     today,
+    });
+ 
+    const budgetAlert = checkBudgetAlert(wallet.id, 'Belanja');
+    const formatted   = formatTransaksi(tx, wallet.lang);
+    let pesan = wallet.lang === 'en'
+      ? `✅ *Receipt scanned & recorded!*\n\n${formatted}`
+      : `✅ *Struk berhasil dibaca & dicatat!*\n\n${formatted}`;
+    if (budgetAlert) pesan += `\n\n⚠️ ${budgetAlert}`;
+ 
+    await sock.sendMessage(chatId, { text: pesan }, { quoted: msg });
+  } catch (err) {
+    console.error('[WA OCR]', err);
+    reply(sock, msg, '❌ Gagal proses foto. Coba lagi.');
+  }
+}
+ 
 // ─── Router ───────────────────────────────────────────────
  
 /**
@@ -1042,6 +1136,9 @@ async function routeMessage(sock, msg, text, senderName) {
     case 'grafik':
     case 'chart':
       return handleGrafik(sock, msg, args);
+ 
+    case 'trend':
+      return handleTrend(sock, msg, args);
  
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
@@ -1221,6 +1318,20 @@ async function createWhatsAppBot() {
       // Skip pesan dari bot sendiri
       if (msg.key.fromMe) continue;
  
+      // Auto-create wallet untuk chat ini
+      const chatId = msg.key.remoteJid;
+      getOrCreateWallet('whatsapp', chatId, '');
+ 
+      // ── Pesan Gambar → coba OCR struk ─────────────────
+      if (msg.message?.imageMessage) {
+        try {
+          await handleImageOcr(sock, msg);
+        } catch (err) {
+          console.error('[WA image route]', err);
+        }
+        continue;
+      }
+ 
       // Ambil teks pesan
       const text = (
         msg.message?.conversation ||
@@ -1234,10 +1345,6 @@ async function createWhatsAppBot() {
       // Ambil nama pengirim
       const senderJid = msg.key.participant || msg.key.remoteJid;
       const senderName = msg.pushName || senderJid.split('@')[0] || 'Unknown';
- 
-      // Auto-create wallet untuk chat ini
-      const chatId = msg.key.remoteJid;
-      getOrCreateWallet('whatsapp', chatId, '');
  
       try {
         await routeMessage(sock, msg, text, senderName);

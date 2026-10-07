@@ -751,6 +751,73 @@ function getKekayaan(walletId) {
   };
 }
  
+/**
+ * Data pengeluaran + pemasukan per bulan selama N bulan terakhir
+ * Dipakai untuk grafik trend /trend
+ * @param {string} walletId
+ * @param {number} months - 1–12, default 6
+ * @returns {Array<{ month: string, masuk: number, keluar: number }>}
+ */
+function getLaporanTrend(walletId, months = 6) {
+  months = Math.min(Math.max(parseInt(months) || 6, 1), 12);
+  const db = getDb();
+ 
+  // Hitung cutoff: bulan-N (tidak termasuk bulan ini)
+  const now    = new Date();
+  const cutoff = new Date(now.getFullYear(), now.getMonth() - months + 1, 1);
+  const cutoffStr = cutoff.getFullYear() + '-' +
+    String(cutoff.getMonth() + 1).padStart(2, '0');
+ 
+  const rows = db.prepare(`
+    SELECT
+      strftime('%Y-%m', date) AS month,
+      COALESCE(SUM(CASE WHEN type = 'in'  THEN amount ELSE 0 END), 0) AS masuk,
+      COALESCE(SUM(CASE WHEN type = 'out' THEN amount ELSE 0 END), 0) AS keluar
+    FROM transactions
+    WHERE wallet_id = ?
+      AND strftime('%Y-%m', date) >= ?
+    GROUP BY strftime('%Y-%m', date)
+    ORDER BY month ASC
+  `).all(walletId, cutoffStr);
+ 
+  return rows;
+}
+ 
+/**
+ * Laporan bulan LALU (bukan bulan ini)
+ * Dipakai scheduler untuk laporan bulanan otomatis
+ * @param {string} walletId
+ * @returns {{ transactions, monthStr, summary }}
+ */
+function getLaporanBulanLalu(walletId) {
+  const db  = getDb();
+  const now = new Date();
+  // Bulan lalu: kalau Januari → Desember tahun lalu
+  const y = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+  const m = now.getMonth() === 0 ? 12 : now.getMonth();
+  const monthStr = `${y}-${String(m).padStart(2, '0')}`;
+ 
+  const transactions = db.prepare(`
+    SELECT * FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ?
+    ORDER BY date DESC, created_at DESC
+  `).all(walletId, monthStr);
+ 
+  const masuk  = transactions.filter(t => t.type === 'in' ).reduce((s, t) => s + t.amount, 0);
+  const keluar = transactions.filter(t => t.type === 'out').reduce((s, t) => s + t.amount, 0);
+ 
+  return {
+    transactions,
+    monthStr,
+    summary: {
+      total_masuk:       masuk,
+      total_keluar:      keluar,
+      selisih:           masuk - keluar,
+      jumlah_transaksi:  transactions.length,
+    },
+  };
+}
+ 
 module.exports = {
   addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
@@ -762,4 +829,6 @@ module.exports = {
   getExportData, generateCsv,
   getAnalisis,
   getKekayaan,
+  getLaporanTrend,
+  getLaporanBulanLalu,
 };
