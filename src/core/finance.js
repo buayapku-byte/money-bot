@@ -784,6 +784,70 @@ function getLaporanTrend(walletId, months = 6) {
 }
  
 /**
+ * Laporan minggu LALU (Senin–Minggu)
+ * Dipakai scheduler weekly digest
+ * @param {string} walletId
+ * @returns {{ transactions, fromStr, toStr, summary }}
+ */
+function getLaporanMingguLalu(walletId) {
+  const db  = getDb();
+  const now = new Date();
+ 
+  // Hari ke-N sejak Senin minggu ini (0=Senin, 6=Minggu)
+  const day = now.getDay() === 0 ? 6 : now.getDay() - 1;
+ 
+  const lastMonday = new Date(now);
+  lastMonday.setDate(now.getDate() - day - 7);
+  const lastSunday = new Date(lastMonday);
+  lastSunday.setDate(lastMonday.getDate() + 6);
+ 
+  const fromStr = lastMonday.toISOString().slice(0, 10);
+  const toStr   = lastSunday.toISOString().slice(0, 10);
+ 
+  const transactions = db.prepare(`
+    SELECT * FROM transactions
+    WHERE wallet_id = ? AND date >= ? AND date <= ?
+    ORDER BY date DESC, created_at DESC
+  `).all(walletId, fromStr, toStr);
+ 
+  const masuk  = transactions.filter(t => t.type === 'in' ).reduce((s, t) => s + t.amount, 0);
+  const keluar = transactions.filter(t => t.type === 'out').reduce((s, t) => s + t.amount, 0);
+ 
+  return {
+    transactions, fromStr, toStr,
+    summary: {
+      total_masuk:      masuk,
+      total_keluar:     keluar,
+      selisih:          masuk - keluar,
+      jumlah_transaksi: transactions.length,
+    },
+  };
+}
+ 
+/**
+ * Ambil saldo + konversi ke currency pilihan user
+ * @param {string} walletId
+ * @returns {{ saldo, total_masuk, total_keluar, conversions: Array<{code, symbol, value}> }}
+ */
+function getSaldoMultiCurrency(walletId) {
+  const base = getSaldo(walletId);
+  const db   = getDb();
+ 
+  // Ambil hanya currency yang di-set user secara eksplisit
+  const customs = db.prepare(
+    'SELECT code, rate_to_idr FROM currencies WHERE wallet_id = ? ORDER BY code'
+  ).all(walletId);
+ 
+  const conversions = customs.map(c => ({
+    code:   c.code,
+    symbol: CURRENCY_SYMBOLS[c.code] || c.code,
+    value:  c.rate_to_idr > 0 ? base.saldo / c.rate_to_idr : 0,
+  }));
+ 
+  return { ...base, conversions };
+}
+ 
+/**
  * Laporan bulan LALU (bukan bulan ini)
  * Dipakai scheduler untuk laporan bulanan otomatis
  * @param {string} walletId
@@ -831,4 +895,6 @@ module.exports = {
   getKekayaan,
   getLaporanTrend,
   getLaporanBulanLalu,
+  getLaporanMingguLalu,
+  getSaldoMultiCurrency,
 };

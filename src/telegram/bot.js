@@ -8,7 +8,9 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   addRecurring, getRecurring, deleteRecurring,
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
   fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES,
-  getExportData, generateCsv, getAnalisis, getKekayaan } = require('../core/finance');
+  getExportData, generateCsv, getAnalisis, getKekayaan,
+  getSaldoMultiCurrency } = require('../core/finance');
+const { parseNLP } = require('../core/nlp');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -235,8 +237,21 @@ function createTelegramBot() {
   bot.command('saldo', async (ctx) => {
     try {
       const wallet = getWallet(ctx);
-      const data = getSaldo(wallet.id);
-      await replyMd(ctx, formatSaldo(data, wallet.lang));
+      const data   = getSaldoMultiCurrency(wallet.id);
+      let text     = formatSaldo(data, wallet.lang);
+ 
+      // Tampilkan konversi currency jika user sudah set kurs
+      if (data.conversions?.length) {
+        const lines = data.conversions.map(c => {
+          const val = Math.abs(c.value) >= 100
+            ? Math.round(c.value).toLocaleString('id-ID')
+            : c.value.toFixed(2);
+          return `   ≈ ${c.symbol} ${val} (${c.code})`;
+        });
+        text += '\n' + lines.join('\n');
+      }
+ 
+      await replyMd(ctx, text);
     } catch (err) {
       console.error('[TG /saldo]', err);
       replyError(ctx, 'Gagal ambil saldo.');
@@ -1033,6 +1048,42 @@ function createTelegramBot() {
     } catch (err) {
       console.error('[TG /bahasa]', err);
       replyError(ctx, 'Terjadi error.');
+    }
+  });
+ 
+  // ─── NLP Catat Cepat ──────────────────────────────────
+  // Trigger: pesan teks biasa (bukan command) yang berisi nominal + keterangan
+  // Contoh: "makan siang 35rb", "gaji 5jt", "bensin 50.000"
+  bot.on('text', async (ctx) => {
+    // Skip command
+    if (ctx.message.text.startsWith('/')) return;
+ 
+    const nlp = parseNLP(ctx.message.text);
+    if (!nlp) return; // tidak terdeteksi sebagai transaksi → diam saja
+ 
+    try {
+      const wallet = getWallet(ctx);
+      const today  = new Date().toISOString().slice(0, 10);
+      const tx = addTransaction(wallet.id, {
+        type:   nlp.type,
+        amount: nlp.amount,
+        note:   nlp.note,
+        date:   today,
+      });
+ 
+      const budgetAlert = checkBudgetAlert(wallet.id, tx.category);
+      let msg = formatTransaksi(tx, wallet.lang);
+      if (budgetAlert) msg += `\n\n⚠️ ${budgetAlert}`;
+ 
+      // Tambah hint pertama kali — cara undo
+      msg += wallet.lang === 'en'
+        ? `\n\n_Tap /undo to cancel_`
+        : `\n\n_Ketik /undo untuk batalkan_`;
+ 
+      await replyMd(ctx, msg);
+    } catch (err) {
+      console.error('[TG NLP]', err);
+      // Jangan balas error — user mungkin hanya chat biasa
     }
   });
  

@@ -20,7 +20,9 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   addRecurring, getRecurring, deleteRecurring,
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
   fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES,
-  getExportData, generateCsv, getAnalisis, getKekayaan } = require('../core/finance');
+  getExportData, generateCsv, getAnalisis, getKekayaan,
+  getSaldoMultiCurrency } = require('../core/finance');
+const { parseNLP } = require('../core/nlp');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
 const {
@@ -260,9 +262,23 @@ async function handleCatat(sock, msg, args, senderName) {
  
 async function handleSaldo(sock, msg) {
   try {
-    const wallet = getWallet(msg.key.remoteJid);
-    const data = getSaldo(wallet.id);
-    await reply(sock, msg, formatSaldo(data, wallet.lang));
+    const chatId = msg.key.remoteJid;
+    const wallet = getWallet(chatId);
+    const data   = getSaldoMultiCurrency(wallet.id);
+    let text     = formatSaldo(data, wallet.lang);
+ 
+    // Tampilkan konversi currency jika user sudah set kurs
+    if (data.conversions?.length) {
+      const lines = data.conversions.map(c => {
+        const val = Math.abs(c.value) >= 100
+          ? Math.round(c.value).toLocaleString('id-ID')
+          : c.value.toFixed(2);
+        return `   ≈ ${c.symbol} ${val} (${c.code})`;
+      });
+      text += '\n' + lines.join('\n');
+    }
+ 
+    await reply(sock, msg, text);
   } catch (err) {
     console.error('[WA /saldo]', err);
     reply(sock, msg, '❌ Gagal ambil saldo.');
@@ -1047,8 +1063,38 @@ async function handleImageOcr(sock, msg) {
 async function routeMessage(sock, msg, text, senderName) {
   const prefix = config.wa.prefix;
  
-  // Harus diawali prefix
-  if (!text.startsWith(prefix)) return;
+  // Pesan tanpa prefix → coba NLP catat cepat
+  if (!text.startsWith(prefix)) {
+    const nlp = parseNLP(text);
+    if (!nlp) return; // bukan transaksi → abaikan
+ 
+    try {
+      const chatId = msg.key.remoteJid;
+      const wallet = getWallet(chatId);
+      const today  = new Date().toISOString().slice(0, 10);
+      const tx = addTransaction(wallet.id, {
+        type:   nlp.type,
+        amount: nlp.amount,
+        note:   nlp.note,
+        date:   today,
+      });
+ 
+      const budgetAlert = checkBudgetAlert(wallet.id, tx.category);
+      let pesan = formatTransaksi(tx, wallet.lang);
+      if (budgetAlert) pesan += `\n\n⚠️ ${budgetAlert}`;
+ 
+      const undoHint = wallet.lang === 'en'
+        ? `\n\n_Reply ${prefix}undo to cancel_`
+        : `\n\n_Balas ${prefix}undo untuk batalkan_`;
+      pesan += undoHint;
+ 
+      await sock.sendMessage(chatId, { text: pesan }, { quoted: msg });
+    } catch (err) {
+      console.error('[WA NLP]', err);
+      // Diam saja kalau error — mungkin bukan transaksi
+    }
+    return;
+  }
  
   // Split command dan args
   const parts = text.slice(prefix.length).trim().split(/\s+/);
