@@ -31,6 +31,14 @@ function initDatabase() {
     // kolom sudah ada — skip
   }
  
+  // Migration: tambah kolom receipt_path ke transactions (untuk Foto Struk)
+  try {
+    db.exec("ALTER TABLE transactions ADD COLUMN receipt_path TEXT");
+    console.log('[DB] Kolom receipt_path ditambahkan ke transactions');
+  } catch (_) {
+    // kolom sudah ada — skip
+  }
+ 
   console.log(`✅ Database ready: ${config.db.path}`);
   return db;
 }
@@ -322,10 +330,19 @@ function setLang(walletId, lang) {
   db.prepare("UPDATE wallets SET lang = ? WHERE id = ?").run(lang, walletId);
 }
  
+/**
+ * Ambil path file database
+ * @returns {string} path absolut ke file .db
+ */
+function getDbPath() {
+  return path.resolve(config.db.path);
+}
+ 
 module.exports = {
   initDatabase,
   getOrCreateWallet,
   getDb,
+  getDbPath,
   resolveWalletId,
   createInviteCode,
   useInviteCode,

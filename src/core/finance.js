@@ -900,6 +900,51 @@ function getLaporanBulanLalu(walletId) {
   };
 }
  
+/**
+ * Hitung savings rate bulan ini
+ * Savings Rate = (Masuk - Keluar) / Masuk × 100%
+ * @param {string} walletId
+ * @returns {{ rate: number, masuk: number, keluar: number, tabungan: number, period: string }}
+ */
+function getSavingsRate(walletId) {
+  const db  = getDb();
+  const now = new Date();
+  const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+ 
+  const rows = db.prepare(`
+    SELECT type, COALESCE(SUM(amount), 0) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ?
+    GROUP BY type
+  `).all(walletId, monthStr);
+ 
+  const masuk  = rows.find(r => r.type === 'in')?.total  || 0;
+  const keluar = rows.find(r => r.type === 'out')?.total || 0;
+  const tabungan = masuk - keluar;
+  const rate   = masuk > 0 ? Math.round((tabungan / masuk) * 100) : 0;
+ 
+  // Ambil juga rata-rata 3 bulan terakhir
+  const threeMonths = [];
+  for (let i = 1; i <= 3; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const ms = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    const r = db.prepare(`
+      SELECT type, COALESCE(SUM(amount), 0) AS total
+      FROM transactions
+      WHERE wallet_id = ? AND strftime('%Y-%m', date) = ?
+      GROUP BY type
+    `).all(walletId, ms);
+    const m = r.find(x => x.type === 'in')?.total  || 0;
+    const k = r.find(x => x.type === 'out')?.total || 0;
+    if (m > 0) threeMonths.push(Math.round(((m - k) / m) * 100));
+  }
+  const avgRate = threeMonths.length > 0
+    ? Math.round(threeMonths.reduce((a, b) => a + b, 0) / threeMonths.length)
+    : null;
+ 
+  return { rate, masuk, keluar, tabungan, period: monthStr, avgRate };
+}
+ 
 module.exports = {
   addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
@@ -915,4 +960,5 @@ module.exports = {
   getLaporanBulanLalu,
   getLaporanMingguLalu,
   getSaldoMultiCurrency,
+  getSavingsRate,
 };

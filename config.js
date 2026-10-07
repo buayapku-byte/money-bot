@@ -24,4 +24,17 @@ module.exports = {
   wa: {
     prefix: '!',
   },
+ 
+  // Auto-backup Telegram: isi BACKUP_CHAT_ID untuk backup harian ke satu chat
+  // Biarkan kosong untuk backup mingguan ke semua wallet (perilaku default)
+  backup: {
+    chatId: process.env.BACKUP_CHAT_ID || '',
+  },
+ 
+  // Google Sheets sync (opsional)
+  // Buat Service Account, share spreadsheet ke email SA, lalu isi env vars
+  sheets: {
+    spreadsheetId: process.env.GOOGLE_SHEETS_ID || '',
+    serviceAccountJson: process.env.GOOGLE_SERVICE_ACCOUNT_JSON || '',
+  },
 };

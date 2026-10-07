@@ -85,6 +85,20 @@ function getWalletDashboard(walletId) {
   const saldo = masuk.t - keluar.t;
   const conversions = getMultiCurrencyData(walletId, saldo);
  
+  // Savings Rate bulan ini
+  const now = new Date();
+  const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const srRows = db.prepare(`
+    SELECT type, COALESCE(SUM(amount), 0) AS total
+    FROM transactions
+    WHERE wallet_id = ? AND strftime('%Y-%m', date) = ?
+    GROUP BY type
+  `).all(walletId, monthStr);
+  const srMasuk  = srRows.find(r => r.type === 'in')?.total  || 0;
+  const srKeluar = srRows.find(r => r.type === 'out')?.total || 0;
+  const savingsRate = srMasuk > 0 ? Math.round(((srMasuk - srKeluar) / srMasuk) * 100) : 0;
+  const savingsTabungan = srMasuk - srKeluar;
+ 
   return {
     saldo,
     total_masuk: masuk.t,
@@ -94,6 +108,10 @@ function getWalletDashboard(walletId) {
     recent,
     kategori,
     conversions,
+    savingsRate,
+    savingsTabungan,
+    savingsMasuk: srMasuk,
+    savingsKeluar: srKeluar,
   };
 }
  
@@ -484,6 +502,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .currency-chip:nth-child(3) { border-left-color: #7c3aed; }
     .currency-chip:nth-child(4) { border-left-color: #0891b2; }
     .currency-chip:nth-child(5) { border-left-color: #16a34a; }
+ 
+    /* ── Savings Rate Card ── */
+    .savings-card {
+      background: white; border-radius: 14px; padding: 20px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.07); margin-bottom: 20px;
+      border-left: 4px solid #16a34a;
+    }
+    .savings-title { font-size: 0.85rem; font-weight: 700; color: #6b7280; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+    .savings-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+    .savings-rate-big { font-size: 2.2rem; font-weight: 800; color: #16a34a; }
+    .savings-rate-big.negative { color: #dc2626; }
+    .savings-bar-wrap { flex: 1; min-width: 160px; }
+    .savings-bar-track { height: 10px; background: #e5e7eb; border-radius: 99px; overflow: hidden; margin-bottom: 6px; }
+    .savings-bar-fill { height: 100%; border-radius: 99px; background: linear-gradient(90deg, #16a34a, #4ade80); transition: width 0.4s; }
+    .savings-bar-fill.low { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+    .savings-bar-fill.negative { background: linear-gradient(90deg, #dc2626, #f87171); }
+    .savings-detail { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px; font-size: 0.82rem; color: #6b7280; }
+    .savings-detail span b { color: #1a1a2e; }
     .currency-code { font-size: 0.7rem; color: #9ca3af; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
     .currency-val  { font-size: 1.05rem; font-weight: 700; color: #1a1a2e; }
     @media (max-width: 580px) { .currency-chip { min-width: calc(50% - 6px); } }
@@ -524,6 +560,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   </div>
  
   <div class="currency-strip" id="currency-strip" style="display:none"></div>
+ 
+  <div class="savings-card" id="savings-card" style="display:none">
+    <div class="savings-title">📊 Savings Rate — Bulan Ini</div>
+    <div class="savings-row">
+      <div class="savings-rate-big" id="sr-rate">–</div>
+      <div class="savings-bar-wrap">
+        <div class="savings-bar-track"><div class="savings-bar-fill" id="sr-bar" style="width:0%"></div></div>
+        <div class="savings-detail">
+          <span>💵 Masuk: <b id="sr-masuk">–</b></span>
+          <span>💸 Keluar: <b id="sr-keluar">–</b></span>
+          <span>🏦 Tabungan: <b id="sr-tabungan">–</b></span>
+        </div>
+      </div>
+    </div>
+  </div>
  
   <div class="chart-card">
     <div class="section-title">📅 Pemasukan vs Pengeluaran — 30 Hari Terakhir</div>
@@ -821,6 +872,28 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     window.open('/api/export?' + params, '_blank');
   }
  
+  function renderSavingsRate(data) {
+    const card = document.getElementById('savings-card');
+    if (!card) return;
+    const rate     = data.savingsRate ?? 0;
+    const masuk    = data.savingsMasuk ?? 0;
+    if (masuk === 0) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    const rateEl    = document.getElementById('sr-rate');
+    const barEl     = document.getElementById('sr-bar');
+    const masukEl   = document.getElementById('sr-masuk');
+    const keluarEl  = document.getElementById('sr-keluar');
+    const tabEl     = document.getElementById('sr-tabungan');
+    rateEl.textContent   = `${rate}%`;
+    rateEl.className     = 'savings-rate-big' + (rate < 0 ? ' negative' : '');
+    const pct = Math.max(0, Math.min(100, rate));
+    barEl.style.width    = pct + '%';
+    barEl.className      = 'savings-bar-fill' + (rate < 0 ? ' negative' : rate < 10 ? ' low' : '');
+    masukEl.textContent  = formatRp(data.savingsMasuk);
+    keluarEl.textContent = formatRp(data.savingsKeluar);
+    tabEl.textContent    = formatRp(data.savingsTabungan);
+  }
+ 
   async function loadDashboard(walletId) {
     currentWalletId = walletId;
     document.getElementById('stat-saldo').textContent  = '...';
@@ -838,6 +911,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       renderCurrencyStrip(data.conversions || []);
       renderKategori(data.kategori || []);
       renderGoals(data.goals);
+      renderSavingsRate(data);
       // Reset filter lalu load semua transaksi
       document.getElementById('f-from').value     = '';
       document.getElementById('f-to').value       = '';

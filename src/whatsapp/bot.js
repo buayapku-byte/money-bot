@@ -21,7 +21,7 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
   fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES,
   getExportData, generateCsv, getAnalisis, getKekayaan,
-  getSaldoMultiCurrency } = require('../core/finance');
+  getSaldoMultiCurrency, getSavingsRate } = require('../core/finance');
 const { parseNLP } = require('../core/nlp');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
@@ -260,6 +260,17 @@ async function handleCatat(sock, msg, args, senderName) {
   }
 }
  
+/**
+ * Progress bar savings rate (teks, cocok untuk WA)
+ */
+function buildSavingsBar(rate) {
+  const clamped = Math.max(0, Math.min(100, rate));
+  const filled = Math.round(clamped / 10);
+  const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
+  const emoji = rate >= 20 ? '🟢' : rate >= 10 ? '🟡' : rate > 0 ? '🟠' : '🔴';
+  return `${emoji} [${bar}]`;
+}
+ 
 async function handleSaldo(sock, msg) {
   try {
     const chatId = msg.key.remoteJid;
@@ -276,6 +287,21 @@ async function handleSaldo(sock, msg) {
         return `   ≈ ${c.symbol} ${val} (${c.code})`;
       });
       text += '\n' + lines.join('\n');
+    }
+ 
+    // Savings Rate
+    const sr = getSavingsRate(wallet.id);
+    if (sr.masuk > 0) {
+      const bar = buildSavingsBar(sr.rate);
+      const monthLabel = wallet.lang === 'en' ? 'This Month' : 'Bulan Ini';
+      const avgLabel   = wallet.lang === 'en' ? '3-mo avg' : 'Rata-rata 3 bln';
+      let srBlock = `\n\n📊 *Savings Rate ${monthLabel}*\n` +
+        `${bar} *${sr.rate}%*\n` +
+        `💵 Masuk: ${formatRupiah(sr.masuk)}\n` +
+        `💸 Keluar: ${formatRupiah(sr.keluar)}\n` +
+        `🏦 Tabungan: ${formatRupiah(sr.tabungan)}`;
+      if (sr.avgRate !== null) srBlock += `\n_${avgLabel}: ${sr.avgRate}%_`;
+      text += srBlock;
     }
  
     await reply(sock, msg, text);

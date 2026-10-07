@@ -1,4 +1,3 @@
-
 // ─── Reminder / Cron Job ─────────────────────────────────
 // Kirim notif harian otomatis ke semua wallet yang aktif
 // Di-init setelah Telegram & WA bot ready
@@ -9,6 +8,18 @@ const { getDb, getDbPath } = require('./database');
 const { getSaldo, processRecurring, getWeeklyAnalysis, fetchLiveRates } = require('./finance');
 const { getGoals, getGoalProgress } = require('./goals');
 const { formatRupiah, progressBar } = require('./formatter');
+ 
+// Lazy-load sheets agar tidak crash kalau googleapis tidak diinstall
+let sheetsModule = null;
+function getSheets() {
+  if (sheetsModule) return sheetsModule;
+  try {
+    sheetsModule = require('./sheets');
+  } catch (_) {
+    sheetsModule = null;
+  }
+  return sheetsModule;
+}
  
 // Simpan referensi ke bot instances
 let telegramBot = null;
@@ -31,6 +42,7 @@ function initReminders(tgBot, sock) {
   scheduleWeeklyTips();
   scheduleAutoBackup();
   scheduleRateFetch();
+  scheduleSheetsSync();
   console.log('✅ Reminder scheduler aktif');
 }
  
@@ -267,59 +279,116 @@ function scheduleWeeklyTips() {
  * Jadwalkan backup otomatis — setiap Minggu jam 22:00 WIB
  * Kirim file .db ke semua wallet aktif
  */
+/**
+ * Kirim backup DB ke satu chat Telegram
+ */
+async function sendTelegramBackup(chatId, dbPath, label) {
+  label = label || 'Harian';
+  const now = new Date().toLocaleDateString('id-ID', {
+    day: '2-digit', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta'
+  });
+  const caption = `💾 *Backup Otomatis ${label}*\n\n📅 ${now}\nFile database keuangan kamu.\n\nSimpan baik-baik ya! 🔒`;
+  await telegramBot.telegram.sendDocument(chatId, {
+    source: dbPath,
+    filename: `money-bot-backup-${new Date().toISOString().split('T')[0]}.db`,
+  }, { caption, parse_mode: 'Markdown' });
+}
+ 
+/**
+ * Jadwalkan backup otomatis:
+ * - BACKUP_CHAT_ID diset -> kirim harian ke chat itu saja (22:00 WIB)
+ * - Fallback: kirim mingguan (Minggu 22:00 WIB) ke semua wallet
+ */
 function scheduleAutoBackup() {
-  cron.schedule('0 22 * * 0', async () => {
-    console.log('[Backup] Mulai kirim backup otomatis...');
-    const db = getDb();
-    const dbPath = getDbPath();
+  const backupChatId = process.env.BACKUP_CHAT_ID;
  
-    if (!fs.existsSync(dbPath)) {
-      console.error('[Backup] File DB tidak ditemukan:', dbPath);
-      return;
-    }
- 
-    try {
-      const wallets = db.prepare(`SELECT * FROM wallets`).all();
-      const now = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' });
-      let sent = 0;
- 
-      for (const wallet of wallets) {
-        try {
-          const caption = `💾 *Backup Otomatis Mingguan*\n\n📅 ${now}\nFile database keuangan kamu.\n\nSimpan baik-baik ya! 🔒`;
- 
-          if (wallet.platform === 'telegram' && telegramBot) {
-            const chatId = wallet.id.replace('tg:', '');
-            await telegramBot.telegram.sendDocument(chatId, {
-              source: dbPath,
-              filename: `money-bot-backup-${new Date().toISOString().split('T')[0]}.db`,
-            }, {
-              caption,
-              parse_mode: 'Markdown',
-            });
-            sent++;
-          } else if (wallet.platform === 'whatsapp' && waSock) {
-            const chatId = wallet.id.replace('wa:', '');
-            const fileBuffer = fs.readFileSync(dbPath);
-            await waSock.sendMessage(chatId, {
-              document: fileBuffer,
-              fileName: `money-bot-backup-${new Date().toISOString().split('T')[0]}.db`,
-              mimetype: 'application/octet-stream',
-              caption: caption.replace(/\*/g, '').replace(/_/g, ''),
-            });
-            sent++;
-          }
-        } catch (err) {
-          console.error(`[Backup] Gagal kirim ke ${wallet.id}:`, err.message);
-        }
+  if (backupChatId) {
+    cron.schedule('0 22 * * *', async () => {
+      console.log('[Backup] Mulai backup harian ke BACKUP_CHAT_ID...');
+      const dbPath = getDbPath();
+      if (!fs.existsSync(dbPath)) {
+        console.error('[Backup] File DB tidak ditemukan:', dbPath);
+        return;
       }
+      try {
+        if (telegramBot) {
+          await sendTelegramBackup(backupChatId, dbPath, 'Harian');
+          console.log(`[Backup] Backup harian terkirim ke ${backupChatId} ✅`);
+        }
+      } catch (err) {
+        console.error('[Backup] Gagal kirim backup harian:', err.message);
+      }
+    }, { timezone: 'Asia/Jakarta' });
+    console.log('[Backup] Backup HARIAN ke BACKUP_CHAT_ID dijadwalkan (22:00 WIB)');
+  } else {
+    cron.schedule('0 22 * * 0', async () => {
+      console.log('[Backup] Mulai kirim backup mingguan ke semua wallet...');
+      const db = getDb();
+      const dbPath = getDbPath();
+      if (!fs.existsSync(dbPath)) {
+        console.error('[Backup] File DB tidak ditemukan:', dbPath);
+        return;
+      }
+      try {
+        const wallets = db.prepare('SELECT * FROM wallets').all();
+        let sent = 0;
+        for (const wallet of wallets) {
+          try {
+            if (wallet.platform === 'telegram' && telegramBot) {
+              await sendTelegramBackup(wallet.id.replace('tg:', ''), dbPath, 'Mingguan');
+              sent++;
+            } else if (wallet.platform === 'whatsapp' && waSock) {
+              const chatId = wallet.id.replace('wa:', '');
+              const fileBuffer = fs.readFileSync(dbPath);
+              const now = new Date().toLocaleDateString('id-ID', { day: '2-digit', month: 'long', year: 'numeric', timeZone: 'Asia/Jakarta' });
+              await waSock.sendMessage(chatId, {
+                document: fileBuffer,
+                fileName: `money-bot-backup-${new Date().toISOString().split('T')[0]}.db`,
+                mimetype: 'application/octet-stream',
+                caption: `Backup Otomatis Mingguan\n\n${now}\nFile database keuangan kamu. Simpan baik-baik ya!`,
+              });
+              sent++;
+            }
+          } catch (err) {
+            console.error(`[Backup] Gagal kirim ke ${wallet.id}:`, err.message);
+          }
+        }
+        console.log(`[Backup] Selesai - ${sent}/${wallets.length} wallet.`);
+      } catch (err) {
+        console.error('[Backup] Error:', err.message);
+      }
+    }, { timezone: 'Asia/Jakarta' });
+    console.log('[Backup] Cron dijadwalkan (Minggu 22:00 WIB) - set BACKUP_CHAT_ID untuk backup harian pribadi');
+  }
+}
  
-      console.log(`[Backup] Selesai — ${sent}/${wallets.length} wallet.`);
+/**
+ * Jadwalkan sinkronisasi Google Sheets setiap hari jam 23:00 WIB
+ */
+function scheduleSheetsSync() {
+  const sheets = getSheets();
+  if (!sheets) {
+    console.log('[Sheets] googleapis tidak diinstall - Google Sheets sync dinonaktifkan.');
+    return;
+  }
+  const ready = sheets.initSheets();
+  if (!ready) return;
+ 
+  sheets.syncToSheets()
+    .then(r => console.log(`[Sheets] Startup sync: ${r.pushed} transaksi`))
+    .catch(err => console.error('[Sheets] Startup sync gagal:', err.message));
+ 
+  cron.schedule('0 23 * * *', async () => {
+    console.log('[Sheets] Mulai sync harian ke Google Sheets...');
+    try {
+      const { pushed } = await sheets.syncToSheets();
+      console.log(`[Sheets] Sync selesai - ${pushed} transaksi baru dikirim.`);
     } catch (err) {
-      console.error('[Backup] Error:', err.message);
+      console.error('[Sheets] Sync gagal:', err.message);
     }
   }, { timezone: 'Asia/Jakarta' });
  
-  console.log('[Backup] Cron dijadwalkan (Minggu 22:00 WIB)');
+  console.log('[Sheets] Google Sheets sync dijadwalkan (23:00 WIB tiap hari)');
 }
  
 /**
