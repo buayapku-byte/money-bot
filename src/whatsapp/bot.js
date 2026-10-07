@@ -1032,14 +1032,7 @@ async function handleImageOcr(sock, msg) {
         : `❌ Tidak ketemu jumlah total.\n\nHasil OCR: ${preview}`);
     }
  
-    const today = new Date().toISOString().slice(0, 10);
-    const tx = addTransaction(wallet.id, {
-      type:     'out',
-      amount:   jumlah,
-      category: 'Belanja',
-      note:     catatan || 'Struk belanja',
-      date:     today,
-    });
+    const tx = addTransaction(wallet.id, 'out', jumlah, catatan || 'Struk belanja', 'belanja', '');
  
     const budgetAlert = checkBudgetAlert(wallet.id, 'Belanja');
     const formatted   = formatTransaksi(tx, wallet.lang);
@@ -1071,13 +1064,7 @@ async function routeMessage(sock, msg, text, senderName) {
     try {
       const chatId = msg.key.remoteJid;
       const wallet = getWallet(chatId);
-      const today  = new Date().toISOString().slice(0, 10);
-      const tx = addTransaction(wallet.id, {
-        type:   nlp.type,
-        amount: nlp.amount,
-        note:   nlp.note,
-        date:   today,
-      });
+      const tx = addTransaction(wallet.id, nlp.type, nlp.amount, nlp.note, 'umum', senderName);
  
       const budgetAlert = checkBudgetAlert(wallet.id, tx.category);
       let pesan = formatTransaksi(tx, wallet.lang);
@@ -1364,8 +1351,15 @@ async function createWhatsAppBot() {
       // Skip pesan dari bot sendiri
       if (msg.key.fromMe) continue;
  
-      // Auto-create wallet untuk chat ini
+      // Skip WhatsApp system JIDs — newsletter, linked device, status broadcast
       const chatId = msg.key.remoteJid;
+      if (
+        chatId.endsWith('@newsletter') ||
+        chatId.endsWith('@lid') ||
+        chatId === 'status@broadcast'
+      ) continue;
+ 
+      // Auto-create wallet untuk chat ini
       getOrCreateWallet('whatsapp', chatId, '');
  
       // ── Pesan Gambar → coba OCR struk ─────────────────
