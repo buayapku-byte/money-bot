@@ -82,15 +82,58 @@ function getWalletDashboard(walletId) {
     ORDER BY total DESC
   `).all(walletId);
  
+  const saldo = masuk.t - keluar.t;
+  const conversions = getMultiCurrencyData(walletId, saldo);
+ 
   return {
-    saldo: masuk.t - keluar.t,
+    saldo,
     total_masuk: masuk.t,
     total_keluar: keluar.t,
     chartData,
     goals: goalsData,
     recent,
     kategori,
+    conversions,
   };
+}
+ 
+// ─── Multi-Currency Helper ────────────────────────────────
+ 
+const CURR_SYMBOL = {
+  USD:'$', SGD:'S$', MYR:'RM', THB:'฿',
+  EUR:'€', JPY:'¥', GBP:'£', AUD:'A$', CNY:'¥', HKD:'HK$', KRW:'₩',
+};
+const DEFAULT_CURRENCIES = ['USD', 'SGD', 'MYR', 'THB'];
+ 
+function getMultiCurrencyData(walletId, saldo) {
+  const db = safeGetDb();
+  if (!db) return [];
+  try {
+    // 1. Cek custom currencies user
+    const customs = db.prepare(
+      'SELECT code, rate_to_idr FROM currencies WHERE wallet_id = ? ORDER BY code'
+    ).all(walletId);
+ 
+    let rateMap = {};
+    if (customs.length > 0) {
+      for (const c of customs) rateMap[c.code] = c.rate_to_idr;
+    } else {
+      // 2. Fallback: live_rates untuk currency populer
+      const placeholders = DEFAULT_CURRENCIES.map(() => '?').join(',');
+      const liveRows = db.prepare(
+        \`SELECT code, rate_to_idr FROM live_rates WHERE code IN (\${placeholders}) ORDER BY code\`
+      ).all(...DEFAULT_CURRENCIES);
+      for (const r of liveRows) rateMap[r.code] = r.rate_to_idr;
+    }
+ 
+    return Object.entries(rateMap)
+      .filter(([, rate]) => rate > 0)
+      .map(([code, rate]) => ({
+        code,
+        symbol: CURR_SYMBOL[code] || code,
+        value: saldo / rate,
+      }));
+  } catch { return []; }
 }
  
 // ─── Transaction Filter & Export Helpers ──────────────────
@@ -426,6 +469,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .btn-export    { background: #2563eb; color: white; }
     .txn-count { font-size: 0.8rem; color: #9ca3af; margin-bottom: 10px; }
     @media (max-width: 580px) { .filter-actions { margin-left: 0; width: 100%; } }
+ 
+    /* ── Currency Strip ── */
+    .currency-strip {
+      display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px;
+    }
+    .currency-chip {
+      background: white; border-radius: 10px; padding: 10px 16px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.06); flex: 1; min-width: 120px;
+      border-left: 3px solid #e5e7eb; display: flex; flex-direction: column; gap: 2px;
+    }
+    .currency-chip:nth-child(1) { border-left-color: #2563eb; }
+    .currency-chip:nth-child(2) { border-left-color: #d97706; }
+    .currency-chip:nth-child(3) { border-left-color: #7c3aed; }
+    .currency-chip:nth-child(4) { border-left-color: #0891b2; }
+    .currency-chip:nth-child(5) { border-left-color: #16a34a; }
+    .currency-code { font-size: 0.7rem; color: #9ca3af; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+    .currency-val  { font-size: 1.05rem; font-weight: 700; color: #1a1a2e; }
+    @media (max-width: 580px) { .currency-chip { min-width: calc(50% - 6px); } }
   </style>
 </head>
 <body>
@@ -461,6 +522,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       <div class="stat-value" id="stat-keluar">–</div>
     </div>
   </div>
+ 
+  <div class="currency-strip" id="currency-strip" style="display:none"></div>
  
   <div class="chart-card">
     <div class="section-title">📅 Pemasukan vs Pengeluaran — 30 Hari Terakhir</div>
@@ -579,6 +642,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         },
       },
     });
+  }
+ 
+  function renderCurrencyStrip(conversions) {
+    const el = document.getElementById('currency-strip');
+    if (!conversions || !conversions.length) { el.style.display = 'none'; return; }
+    el.style.display = 'flex';
+    el.innerHTML = conversions.map(c => {
+      const isNeg = c.value < 0;
+      const absVal = Math.abs(c.value);
+      const formatted = absVal >= 1000
+        ? absVal.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })
+        : absVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return \`<div class="currency-chip">
+        <div class="currency-code">≈ \${c.code}</div>
+        <div class="currency-val">\${isNeg ? '-' : ''}\${c.symbol} \${formatted}</div>
+      </div>\`;
+    }).join('');
   }
  
   function renderGoals(goals) {
@@ -755,6 +835,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       document.getElementById('stat-masuk').textContent  = formatRp(data.total_masuk);
       document.getElementById('stat-keluar').textContent = formatRp(data.total_keluar);
       renderChart(data.chartData);
+      renderCurrencyStrip(data.conversions || []);
       renderKategori(data.kategori || []);
       renderGoals(data.goals);
       // Reset filter lalu load semua transaksi
