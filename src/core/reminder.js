@@ -329,7 +329,7 @@ function scheduleWeeklyTips() {
     } catch (err) {
       console.error('[WeeklyTips] Error:', err.message);
     }
-  }, { timezone: config.reminder.timezone });
+  }, { timezone: 'Asia/Jakarta' });
  
   console.log('[WeeklyTips] Spending insight dijadwalkan (Senin 08:00 WIB)');
 }
