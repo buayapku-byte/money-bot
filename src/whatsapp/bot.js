@@ -21,7 +21,8 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
   fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES,
   getExportData, generateCsv, getAnalisis, getKekayaan,
-  getSaldoMultiCurrency, getSavingsRate } = require('../core/finance');
+  getSaldoMultiCurrency, getSavingsRate,
+  addWishlist, getWishlists, deleteWishlist, getWishlistProjection } = require('../core/finance');
 const { parseNLP } = require('../core/nlp');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
@@ -1199,10 +1200,92 @@ async function routeMessage(sock, msg, text, senderName) {
     case 'trend':
       return handleTrend(sock, msg, args);
  
+    case 'wishlist':
+      return handleWishlist(sock, msg, args);
+ 
     default:
       // Command tidak dikenal — diam aja biar tidak spam grup
       break;
   }
+}
+ 
+// ─── Wishlist ────────────────────────────────────────────────────────────────
+ 
+async function handleWishlist(sock, msg, args) {
+  const chatId = msg.key.remoteJid;
+  const wallet = getOrCreateWallet(chatId.replace('@s.whatsapp.net', '').replace('@g.us', ''), 'whatsapp');
+  const sub = args[0]?.toLowerCase();
+ 
+  // !wishlist tambah <nama> <harga>
+  if (sub === 'tambah' || sub === 'add') {
+    const rest = args.slice(1);
+    if (rest.length < 2) {
+      return sock.sendMessage(chatId, {
+        text: 'Format: !wishlist tambah <nama barang> <harga>\nContoh: !wishlist tambah iPhone 15 15000000'
+      }, { quoted: msg });
+    }
+    const priceStr = rest[rest.length - 1];
+    const price = parseFloat(priceStr.replace(/[^0-9.]/g, ''));
+    if (!price || isNaN(price)) {
+      return sock.sendMessage(chatId, { text: 'Harga tidak valid. Contoh: !wishlist tambah iPhone 15 15000000' }, { quoted: msg });
+    }
+    const name = rest.slice(0, -1).join(' ');
+    const id = addWishlist(wallet.id, name, price);
+    const proj = getWishlistProjection(wallet.id);
+    const item = proj.items.find(i => i.id === id);
+    let text = `Wishlist ditambahkan!
+ 
+`;
+    text += `Nama: ${name}
+`;
+    text += `Harga: ${formatRupiah(price)}
+`;
+    if (item?.monthsNeeded) {
+      text += `Perkiraan bisa beli: ~${item.monthsNeeded} bulan lagi
+`;
+      text += `(Savings rate bulan ini: ${proj.savingsRate}%)`;
+    } else {
+      text += `(Tambah pemasukan dulu biar bisa proyeksi)`;
+    }
+    return sock.sendMessage(chatId, { text }, { quoted: msg });
+  }
+ 
+  // !wishlist hapus <id>
+  if (sub === 'hapus' || sub === 'delete') {
+    const id = parseInt(args[1]);
+    if (!id) return sock.sendMessage(chatId, { text: 'Format: !wishlist hapus <nomor>' }, { quoted: msg });
+    const items = getWishlists(wallet.id);
+    const item = items.find(i => i.id === id);
+    const deleted = deleteWishlist(wallet.id, id);
+    if (deleted) {
+      return sock.sendMessage(chatId, { text: `Dihapus dari wishlist: ${item?.name || id}` }, { quoted: msg });
+    } else {
+      return sock.sendMessage(chatId, { text: 'Item tidak ditemukan. Cek !wishlist untuk melihat ID.' }, { quoted: msg });
+    }
+  }
+ 
+  // !wishlist (list semua)
+  const proj = getWishlistProjection(wallet.id);
+  if (!proj.items.length) {
+    return sock.sendMessage(chatId, {
+      text: 'Wishlist kamu kosong.\n\nTambahkan dengan: !wishlist tambah <nama> <harga>'
+    }, { quoted: msg });
+  }
+ 
+  let text = 'Wishlist Kamu\n';
+  if (proj.savingsPerMonth > 0) {
+    text += `Savings/bulan: ${formatRupiah(proj.savingsPerMonth)} (${proj.savingsRate}%)\n`;
+  }
+  text += '\n';
+  proj.items.forEach((w, i) => {
+    text += `${i + 1}. ${w.name} [ID:${w.id}]\n`;
+    text += `   ${formatRupiah(w.price)}`;
+    if (w.monthsNeeded) text += ` (~${w.monthsNeeded} bulan lagi)`;
+    text += '\n';
+  });
+  text += '\nUntuk hapus: !wishlist hapus <ID>';
+ 
+  return sock.sendMessage(chatId, { text }, { quoted: msg });
 }
  
 // ─── Export CSV ───────────────────────────────────────────

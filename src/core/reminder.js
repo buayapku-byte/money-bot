@@ -226,33 +226,92 @@ function scheduleRecurringProcessor() {
 /**
  * Jadwalkan weekly tips — setiap Senin jam 08:00 WIB
  */
+// Emoji per kategori untuk insight
+const CAT_EMOJI_MAP = [
+  ['makan', '🍔'], ['food', '🍔'], ['makanan', '🍔'],
+  ['kopi', '☕'], ['minum', '☕'], ['cafe', '☕'],
+  ['transport', '🚌'], ['transportasi', '🚌'], ['bensin', '⛽'], ['bbm', '⛽'],
+  ['belanja', '🛒'], ['shopping', '🛒'], ['supermarket', '🛒'],
+  ['hiburan', '🎮'], ['entertainment', '🎮'], ['nonton', '🎬'],
+  ['kesehatan', '💊'], ['health', '💊'], ['obat', '💊'],
+  ['listrik', '💡'], ['air', '💧'], ['internet', '📡'],
+  ['pulsa', '📱'], ['kuota', '📱'],
+  ['pakaian', '👕'], ['baju', '👕'],
+  ['pendidikan', '📚'], ['buku', '📚'],
+  ['tagihan', '🧧'], ['cicilan', '🧧'],
+];
+function getCatEmoji(cat) {
+  if (!cat) return '📌';
+  const lower = cat.toLowerCase();
+  for (const [key, emoji] of CAT_EMOJI_MAP) {
+    if (lower.includes(key)) return emoji;
+  }
+  return '📌';
+}
+ 
 function scheduleWeeklyTips() {
   cron.schedule('0 8 * * 1', async () => {
-    console.log('[WeeklyTips] Mulai kirim analisis mingguan...');
+    console.log('[WeeklyTips] Mulai kirim spending insight mingguan...');
     const db = getDb();
     try {
       const wallets = db.prepare(`SELECT * FROM wallets`).all();
  
       for (const wallet of wallets) {
         try {
-          const { tips, thisWeekTotal, lastWeekTotal, thisWeekIncome } = getWeeklyAnalysis(wallet.id);
+          const analysis = getWeeklyAnalysis(wallet.id);
+          const { thisWeek, lastWeekTotal, lastWeekMap, thisWeekTotal, thisWeekIncome, tips } = analysis;
  
-          if (thisWeekTotal === 0 && thisWeekIncome === 0) continue; // skip wallet kosong
+          if (thisWeekTotal === 0 && thisWeekIncome === 0) continue;
  
-          let msg = `💡 *Tips Mingguan*\n\n`;
-          msg += `📊 Ringkasan 7 hari terakhir:\n`;
-          msg += `• Pengeluaran: *${formatRupiah(thisWeekTotal)}*`;
-          if (lastWeekTotal > 0) {
-            const diff = Math.round(((thisWeekTotal - lastWeekTotal) / lastWeekTotal) * 100);
-            const icon = diff > 0 ? '⬆️' : '⬇️';
-            msg += ` (${icon}${Math.abs(diff)}% vs minggu lalu)`;
+          // ── Header ──
+          const now = new Date();
+          const monday = new Date(now);
+          monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
+          const fmtDate = d => d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', timeZone: 'Asia/Jakarta' });
+          const period = `${fmtDate(monday)} - ${fmtDate(now)}`;
+ 
+          let msg = `📊 *Spending Insight Mingguan*\n`;
+          msg += `_${period}_\n\n`;
+ 
+          // ── Total ──
+          const lTotal = typeof lastWeekTotal === 'number' ? lastWeekTotal : 0;
+          const totalDiff = thisWeekTotal - lTotal;
+          const totalPct = lTotal > 0 ? Math.round((totalDiff / lTotal) * 100) : null;
+          const totalIcon = totalDiff > 0 ? '📈' : '📉';
+          msg += `💸 Total keluar: *${formatRupiah(thisWeekTotal)}*\n`;
+          if (totalPct !== null) {
+            const sign = totalDiff > 0 ? '+' : '';
+            msg += `${totalIcon} vs minggu lalu: ${sign}${totalPct}% _(${sign}${formatRupiah(totalDiff)})_\n`;
           }
-          msg += `\n`;
           if (thisWeekIncome > 0) {
-            msg += `• Pemasukan: *${formatRupiah(thisWeekIncome)}*\n`;
+            msg += `💰 Pemasukan: *${formatRupiah(thisWeekIncome)}*\n`;
           }
-          msg += `\n`;
-          tips.forEach(t => { msg += `${t}\n`; });
+ 
+          // ── Per kategori (top 3 perubahan) ──
+          if (thisWeek && thisWeek.length > 0) {
+            const lMap = lastWeekMap || {};
+            const changes = thisWeek.map(r => {
+              const prev = lMap[r.category] || 0;
+              return { ...r, prev, diff: r.total - prev };
+            }).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff)).slice(0, 3);
+ 
+            if (changes.length > 0) {
+              msg += `\n🔍 *Top kategori:*\n`;
+              for (const c of changes) {
+                const icon = c.diff > 0 ? '🔺' : '🔻';
+                const sign = c.diff > 0 ? '+' : '';
+                const pct = c.prev > 0 ? ` (${sign}${Math.round((c.diff/c.prev)*100)}%)` : '';
+                msg += `${icon} ${getCatEmoji(c.category)} ${c.category}: *${formatRupiah(c.total)}*${c.prev > 0 ? ` ${sign}${formatRupiah(c.diff)}${pct}` : ''}\n`;
+              }
+            }
+          }
+ 
+          // ── Tips ──
+          if (tips && tips.length > 0) {
+            msg += `\n`;
+            tips.slice(0, 2).forEach(t => { msg += `${t}\n`; });
+          }
+ 
           msg += `\nSemangat ngatur keuangan! 🔥`;
  
           if (wallet.platform === 'telegram' && telegramBot) {
@@ -261,7 +320,7 @@ function scheduleWeeklyTips() {
           } else if (wallet.platform === 'whatsapp' && waSock) {
             const chatId = wallet.id.replace('wa:', '');
             const plainMsg = msg.replace(/\*/g, '').replace(/_/g, '');
-            await waSock.sendMessage(chatId, { text: plainMsg });
+            await waSock.sendMessage(chatId + '@s.whatsapp.net', { text: plainMsg });
           }
         } catch (err) {
           console.error(`[WeeklyTips] Gagal kirim ke ${wallet.id}:`, err.message);
@@ -270,9 +329,9 @@ function scheduleWeeklyTips() {
     } catch (err) {
       console.error('[WeeklyTips] Error:', err.message);
     }
-  }, { timezone: 'Asia/Jakarta' });
+  }, { timezone: config.reminder.timezone });
  
-  console.log('[WeeklyTips] Cron dijadwalkan (Senin 08:00 WIB)');
+  console.log('[WeeklyTips] Spending insight dijadwalkan (Senin 08:00 WIB)');
 }
  
 /**

@@ -39,6 +39,17 @@ function initDatabase() {
     // kolom sudah ada — skip
   }
  
+  // Tabel wishlist
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wishlists (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_id  TEXT NOT NULL,
+      name       TEXT NOT NULL,
+      price      REAL NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+ 
   console.log(`✅ Database ready: ${config.db.path}`);
   return db;
 }

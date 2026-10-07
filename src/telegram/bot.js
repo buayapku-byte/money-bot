@@ -1,4 +1,6 @@
 const { Telegraf, Markup } = require('telegraf');
+const fs   = require('fs');
+const path = require('path');
 const config = require('../../config');
 const { getOrCreateWallet, resolveWalletId, createInviteCode, useInviteCode, unlinkWallet, getLang, setLang } = require('../core/database');
 const { t } = require('../core/i18n');
@@ -9,7 +11,8 @@ const { addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransa
   setCurrency, getCurrencies, convertToIdr, CURRENCY_SYMBOLS,
   fetchLiveRates, getLiveRateUpdatedAt, POPULAR_CURRENCIES,
   getExportData, generateCsv, getAnalisis, getKekayaan,
-  getSaldoMultiCurrency } = require('../core/finance');
+  getSaldoMultiCurrency, getSavingsRate,
+  addWishlist, getWishlists, deleteWishlist, getWishlistProjection } = require('../core/finance');
 const { parseNLP } = require('../core/nlp');
 const { createGoal, getGoals, addToGoal, deleteGoal, getGoalProgress } = require('../core/goals');
 const { setReminder, disableReminder } = require('../core/reminder');
@@ -95,6 +98,33 @@ function replyMd(ctx, msg) {
 }
  
 // ─── Bot Setup ────────────────────────────────────────────
+ 
+/**
+ * Progress bar untuk savings rate
+ * @param {number} rate - 0..100
+ */
+/**
+ * Buat inline keyboard untuk konfirmasi transaksi
+ * @param {number} txId
+ */
+function buildTrxKeyboard(txId) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback('✏️ Edit', `edit_${txId}`),
+      Markup.button.callback('🗑️ Hapus', `hapus_${txId}`),
+      Markup.button.callback('💰 Saldo', 'lihat_saldo'),
+    ],
+  ]);
+}
+ 
+function buildSavingsBar(rate) {
+  const clamped = Math.max(0, Math.min(100, rate));
+  const filled = Math.round(clamped / 10);
+  const bar = '█'.repeat(filled) + '░'.repeat(10 - filled);
+  const emoji = rate >= 20 ? '🟢' : rate >= 10 ? '🟡' : rate > 0 ? '🟠' : '🔴';
+  return `${emoji} [${bar}]`;
+}
+ 
  
 function createTelegramBot() {
   if (!config.telegram.token) {
@@ -226,7 +256,7 @@ function createTelegramBot() {
         }
       }
  
-      await replyMd(ctx, replyText);
+      await ctx.reply(replyText, { parse_mode: 'Markdown', ...buildTrxKeyboard(trx.id) });
     } catch (err) {
       console.error('[TG /catat]', err);
       replyError(ctx, err.message || 'Terjadi error. Coba lagi.');
@@ -249,6 +279,23 @@ function createTelegramBot() {
           return `   ≈ ${c.symbol} ${val} (${c.code})`;
         });
         text += '\n' + lines.join('\n');
+      }
+ 
+      // ─── Savings Rate Widget ──────────────────
+      const sr = getSavingsRate(wallet.id);
+      if (sr.masuk > 0) {
+        const rateBar = buildSavingsBar(sr.rate);
+        const monthLabel = wallet.lang === 'en' ? 'This Month' : 'Bulan Ini';
+        const avgLabel   = wallet.lang === 'en' ? '3-mo avg' : 'Rata-rata 3 bln';
+        let srBlock = `\n\n📊 *Savings Rate ${monthLabel}*\n` +
+          `${rateBar} *${sr.rate}%*\n` +
+          `💵 Masuk: ${formatRupiah(sr.masuk)}\n` +
+          `💸 Keluar: ${formatRupiah(sr.keluar)}\n` +
+          `🏦 Tabungan: ${formatRupiah(sr.tabungan)}`;
+        if (sr.avgRate !== null) {
+          srBlock += `\n_${avgLabel}: ${sr.avgRate}%_`;
+        }
+        text += srBlock;
       }
  
       await replyMd(ctx, text);
@@ -1080,7 +1127,7 @@ function createTelegramBot() {
         ? `\n\n_Tap /undo to cancel_`
         : `\n\n_Ketik /undo untuk batalkan_`;
  
-      await replyMd(ctx, msg);
+      await ctx.reply(msg, { parse_mode: 'Markdown', ...buildTrxKeyboard(tx.id) });
     } catch (err) {
       console.error('[TG NLP]', err);
       // Jangan balas error — user mungkin hanya chat biasa
@@ -1145,18 +1192,163 @@ function createTelegramBot() {
         date:     today,
       });
  
-      const budgetAlert = checkBudgetAlert(wallet.id, 'Belanja');
+ 
+      // ─── Simpan foto struk ke disk ────────────
+      try {
+        const receiptsDir = require('path').resolve('./data/receipts');
+        if (!require('fs').existsSync(receiptsDir)) require('fs').mkdirSync(receiptsDir, { recursive: true });
+        const fname = `tx-${tx.id}-${Date.now()}.jpg`;
+        const fpath = require('path').join(receiptsDir, fname);
+        require('fs').writeFileSync(fpath, imgBuffer);
+        // Update receipt_path di DB
+        const { getDb } = require('../core/database');
+        getDb().prepare('UPDATE transactions SET receipt_path = ? WHERE id = ?').run(fpath, tx.id);
+        console.log(`[OCR] Foto struk disimpan: ${fpath}`);
+      } catch (receiptErr) {
+        console.error('[OCR] Gagal simpan foto struk:', receiptErr.message);
+      }
+            const budgetAlert = checkBudgetAlert(wallet.id, 'Belanja');
       const formatted   = formatTransaksi(tx, wallet.lang);
       let msg = wallet.lang === 'en'
         ? `✅ *Receipt scanned & recorded!*\n\n${formatted}`
         : `✅ *Struk berhasil dibaca & dicatat!*\n\n${formatted}`;
  
       if (budgetAlert) msg += `\n\n⚠️ ${budgetAlert}`;
-      await replyMd(ctx, msg);
+      await ctx.reply(msg, { parse_mode: 'Markdown', ...buildTrxKeyboard(tx.id) });
  
     } catch (err) {
       console.error('[TG OCR photo]', err);
       replyError(ctx, 'Gagal proses foto. Coba lagi.');
+    }
+  });
+ 
+  // ─── /wishlist command ─────────────────────────────────────────────────────
+  bot.command('wishlist', async (ctx) => {
+    try {
+      const wallet = getOrCreateWallet(String(ctx.chat.id), 'telegram');
+      const args = ctx.message.text.split(' ').slice(1);
+      const sub = args[0]?.toLowerCase();
+ 
+      // /wishlist tambah <nama> <harga>
+      if (sub === 'tambah' || sub === 'add') {
+        const rest = args.slice(1);
+        const priceStr = rest[rest.length - 1];
+        const price = parseFloat(priceStr.replace(/[^0-9.]/g, ''));
+        if (!price || isNaN(price) || rest.length < 2) {
+          return ctx.reply('❌ Format: /wishlist tambah <nama barang> <harga>\nContoh: /wishlist tambah iPhone 15 15000000');
+        }
+        const name = rest.slice(0, -1).join(' ');
+        const id = addWishlist(wallet.id, name, price);
+        const proj = getWishlistProjection(wallet.id);
+        const item = proj.items.find(i => i.id === id);
+        let msg = `✨ *${name}* ditambahkan ke wishlist!\n`;
+        msg += `💰 Harga: *${formatRupiah(price)}*\n`;
+        if (item?.monthsNeeded) {
+          msg += `📅 Perkiraan bisa beli: *${item.monthsNeeded} bulan lagi*\n`;
+          msg += `_Berdasarkan savings rate ${proj.savingsRate}% bulan ini_`;
+        } else {
+          msg += `_Tambah pemasukan dulu biar bisa proyeksi waktu beli 😁_`;
+        }
+        return ctx.reply(msg, { parse_mode: 'Markdown' });
+      }
+ 
+      // /wishlist (list semua)
+      const proj = getWishlistProjection(wallet.id);
+      if (!proj.items.length) {
+        return ctx.reply('📝 Wishlist kamu kosong.\n\nTambahkan dengan: /wishlist tambah <nama> <harga>');
+      }
+ 
+      let msg = `💖 *Wishlist Kamu*\n`;
+      if (proj.savingsPerMonth > 0) {
+        msg += `_Savings/bulan: ${formatRupiah(proj.savingsPerMonth)} (${proj.savingsRate}%)_\n`;
+      }
+      msg += `\n`;
+ 
+      const buttons = [];
+      proj.items.forEach((w, i) => {
+        const num = i + 1;
+        msg += `*${num}. ${w.name}*\n`;
+        msg += `   💵 ${formatRupiah(w.price)}`;
+        if (w.monthsNeeded) {
+          msg += ` • 📅 ~${w.monthsNeeded} bulan lagi`;
+        } else {
+          msg += ` • _belum ada data savings_`;
+        }
+        msg += `\n`;
+        buttons.push([Markup.button.callback(`🗑️ Hapus: ${w.name.substring(0,20)}`, `wl_del_${w.id}`)]);
+      });
+ 
+      await ctx.reply(msg, {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard(buttons),
+      });
+    } catch (err) {
+      console.error('[TG /wishlist]', err);
+      ctx.reply('❌ Gagal memuat wishlist.');
+    }
+  });
+ 
+  // ─── bot.action() handlers (inline keyboard callbacks) ──────
+ 
+  // Edit transaksi via inline button
+  bot.action(/^edit_(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const txId = ctx.match[1];
+    await ctx.reply(
+      `✏️ *Edit Transaksi #${txId}*\n\nGunakan perintah:\n\`/edit ${txId} [in|out] [jumlah] [catatan]\``,
+      { parse_mode: 'Markdown' }
+    );
+  });
+ 
+  // Hapus transaksi via inline button
+  bot.action(/^hapus_(\d+)$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const txId = parseInt(ctx.match[1]);
+    try {
+      const wallet = getWallet(ctx);
+      deleteTransaction(wallet.id, txId);
+      await ctx.editMessageText(`✅ Transaksi #${txId} berhasil dihapus.`, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error('[TG action hapus]', err);
+      await ctx.answerCbQuery('❌ Gagal hapus transaksi.');
+    }
+  });
+ 
+  // Lihat saldo via inline button
+  // Wishlist hapus
+  bot.action(/^wl_del_(\d+)$/, async (ctx) => {
+    try {
+      await ctx.answerCbQuery();
+      const wishlistId = parseInt(ctx.match[1]);
+      const wallet = getOrCreateWallet(String(ctx.chat.id), 'telegram');
+      const items = getWishlists(wallet.id);
+      const item = items.find(i => i.id === wishlistId);
+      const deleted = deleteWishlist(wallet.id, wishlistId);
+      if (deleted) {
+        await ctx.editMessageText(`✅ *${item?.name || 'Item'}* dihapus dari wishlist.`, { parse_mode: 'Markdown' });
+      } else {
+        await ctx.reply('❌ Item tidak ditemukan.');
+      }
+    } catch (err) {
+      console.error('[TG wl_del]', err);
+    }
+  });
+ 
+  bot.action('lihat_saldo', async (ctx) => {
+    await ctx.answerCbQuery();
+    try {
+      const wallet = getWallet(ctx);
+      const data = getSaldoMultiCurrency(wallet.id);
+      let text = formatSaldo(data, wallet.lang);
+      const sr = getSavingsRate(wallet.id);
+      if (sr.masuk > 0) {
+        const bar = buildSavingsBar(sr.rate);
+        text += `\n\n📊 Savings Rate: ${bar} *${sr.rate}%*`;
+      }
+      await ctx.reply(text, { parse_mode: 'Markdown' });
+    } catch (err) {
+      console.error('[TG action saldo]', err);
+      await ctx.answerCbQuery('❌ Gagal ambil saldo.');
     }
   });
  

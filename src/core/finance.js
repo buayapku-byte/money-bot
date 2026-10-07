@@ -945,6 +945,46 @@ function getSavingsRate(walletId) {
   return { rate, masuk, keluar, tabungan, period: monthStr, avgRate };
 }
  
+ 
+// ─── Wishlist + Proyeksi ─────────────────────────────────────────────────────
+ 
+function addWishlist(walletId, name, price) {
+  const db = getDb();
+  const result = db.prepare(
+    'INSERT INTO wishlists (wallet_id, name, price) VALUES (?, ?, ?)'
+  ).run(walletId, name, price);
+  return result.lastInsertRowid;
+}
+ 
+function getWishlists(walletId) {
+  const db = getDb();
+  return db.prepare(
+    'SELECT * FROM wishlists WHERE wallet_id = ? ORDER BY price ASC'
+  ).all(walletId);
+}
+ 
+function deleteWishlist(walletId, id) {
+  const db = getDb();
+  const result = db.prepare(
+    'DELETE FROM wishlists WHERE id = ? AND wallet_id = ?'
+  ).run(id, walletId);
+  return result.changes > 0;
+}
+ 
+function getWishlistProjection(walletId) {
+  const sr = getSavingsRate(walletId);
+  const items = getWishlists(walletId);
+  const savingsPerMonth = sr.masuk > 0 ? Math.max(0, sr.tabungan) : 0;
+  return {
+    items: items.map(w => {
+      const months = savingsPerMonth > 0 ? Math.ceil(w.price / savingsPerMonth) : null;
+      return { ...w, monthsNeeded: months };
+    }),
+    savingsPerMonth,
+    savingsRate: sr.rate,
+  };
+}
+ 
 module.exports = {
   addTransaction, getSaldo, getHistory, getLaporan, undoLast, deleteTransaction, getLaporanKategori,
   setBudget, getBudgets, deleteBudget, checkBudgetAlert,
@@ -961,4 +1001,5 @@ module.exports = {
   getLaporanMingguLalu,
   getSaldoMultiCurrency,
   getSavingsRate,
+  addWishlist, getWishlists, deleteWishlist, getWishlistProjection,
 };
