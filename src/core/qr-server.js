@@ -121,7 +121,7 @@ function getMultiCurrencyData(walletId, saldo) {
       // 2. Fallback: live_rates untuk currency populer
       const placeholders = DEFAULT_CURRENCIES.map(() => '?').join(',');
       const liveRows = db.prepare(
-        \`SELECT code, rate_to_idr FROM live_rates WHERE code IN (\${placeholders}) ORDER BY code\`
+        'SELECT code, rate_to_idr FROM live_rates WHERE code IN (' + placeholders + ') ORDER BY code'
       ).all(...DEFAULT_CURRENCIES);
       for (const r of liveRows) rateMap[r.code] = r.rate_to_idr;
     }
