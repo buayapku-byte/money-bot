@@ -37,9 +37,31 @@ function msUntilNextMonday() {
   return ms > 0 ? ms : ms + 7 * 24 * 3600_000;
 }
  
-/** Ambil semua wallet dari DB */
+// Max delay setTimeout Node.js = ~24.8 hari (2^31-1 ms)
+const MAX_TIMEOUT = 2_147_483_647;
+ 
+/**
+ * setTimeout yang aman untuk delay besar (split jadi beberapa chunk)
+ * @param {Function} fn
+ * @param {number} ms
+ */
+function safeTimeout(fn, ms) {
+  if (ms <= MAX_TIMEOUT) {
+    setTimeout(fn, ms);
+  } else {
+    // Tunda dulu MAX_TIMEOUT ms, lalu hitung ulang sisa waktu
+    setTimeout(() => safeTimeout(fn, ms - MAX_TIMEOUT), MAX_TIMEOUT);
+  }
+}
+ 
+/** Ambil semua wallet dari DB — chat_id ada di dalam field id (format tg:xxx / wa:xxx) */
 function getAllWallets() {
-  return getDb().prepare('SELECT id, platform, platform_id, lang FROM wallets').all();
+  const rows = getDb().prepare('SELECT id, platform, lang FROM wallets').all();
+  return rows.map(w => ({
+    ...w,
+    // Ekstrak chat_id dari id: "tg:123456" → "123456", "wa:628xxx@s.whatsapp.net" → "628xxx@s.whatsapp.net"
+    chatId: w.id.slice(w.id.indexOf(':') + 1),
+  }));
 }
  
 /** Kirim pesan ke semua wallet lewat platform masing-masing */
@@ -51,15 +73,15 @@ async function broadcast(telegramBot, getWASocket, wallets, buildMsg) {
  
       if (wallet.platform === 'telegram' && telegramBot) {
         await telegramBot.telegram
-          .sendMessage(wallet.platform_id, pesan, { parse_mode: 'Markdown' })
-          .catch(e => console.error(`[Scheduler TG] ${wallet.platform_id}:`, e.message));
+          .sendMessage(wallet.chatId, pesan, { parse_mode: 'Markdown' })
+          .catch(e => console.error(`[Scheduler TG] ${wallet.chatId}:`, e.message));
  
       } else if (wallet.platform === 'whatsapp') {
         const sock = getWASocket ? getWASocket() : null;
         if (sock) {
           await sock
-            .sendMessage(wallet.platform_id, { text: pesan })
-            .catch(e => console.error(`[Scheduler WA] ${wallet.platform_id}:`, e.message));
+            .sendMessage(wallet.chatId, { text: pesan })
+            .catch(e => console.error(`[Scheduler WA] ${wallet.chatId}:`, e.message));
         }
       }
     } catch (err) {
@@ -147,7 +169,7 @@ let _getWASocket = null;
 function scheduleMonthly() {
   const delay = msUntilNextFirst();
   console.log(`[Scheduler] Laporan bulanan ~${Math.round(delay / 3600_000)}j lagi`);
-  setTimeout(async () => {
+  safeTimeout(async () => {
     await sendMonthlyReport(_telegramBot, _getWASocket);
     scheduleMonthly();
   }, delay);
@@ -156,7 +178,7 @@ function scheduleMonthly() {
 function scheduleWeekly() {
   const delay = msUntilNextMonday();
   console.log(`[Scheduler] Weekly digest ~${Math.round(delay / 3600_000)}j lagi (Senin 08:00 WIB)`);
-  setTimeout(async () => {
+  safeTimeout(async () => {
     await sendWeeklyDigest(_telegramBot, _getWASocket);
     scheduleWeekly();
   }, delay);
