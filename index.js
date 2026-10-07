@@ -6,6 +6,7 @@ const { createWhatsAppBot, getWASocket } = require('./src/whatsapp/bot');
 const { initReminders } = require('./src/core/reminder');
 const { startQRServer } = require('./src/core/qr-server');
 const { startScheduler } = require('./src/core/scheduler');
+const { fetchLiveRates } = require('./src/core/finance');
  
 async function main() {
   console.log('');
@@ -34,6 +35,17 @@ async function main() {
     initReminders(tgBot, getWASocket());
     startScheduler(tgBot, getWASocket);  // laporan bulanan otomatis tiap tgl 1
   }, 3000);
+ 
+  // 6. Fetch live rates saat startup (untuk multi-currency saldo otomatis)
+  //    Refresh tiap 6 jam
+  fetchLiveRates()
+    .then(r => console.log(`[Kurs] Live rates loaded: ${r.count} currencies, USD=${r.usdRate}`))
+    .catch(e => console.warn('[Kurs] Gagal fetch live rates saat startup:', e.message));
+  setInterval(() => {
+    fetchLiveRates()
+      .then(r => console.log(`[Kurs] Refreshed: ${r.count} currencies`))
+      .catch(e => console.warn('[Kurs] Gagal refresh live rates:', e.message));
+  }, 6 * 60 * 60 * 1000); // tiap 6 jam
  
   // Graceful shutdown
   const shutdown = (signal) => {

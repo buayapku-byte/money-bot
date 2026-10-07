@@ -829,20 +829,38 @@ function getLaporanMingguLalu(walletId) {
  * @param {string} walletId
  * @returns {{ saldo, total_masuk, total_keluar, conversions: Array<{code, symbol, value}> }}
  */
+// Currency default yang ditampilkan kalau user belum set manual
+const DEFAULT_DISPLAY_CURRENCIES = ['USD', 'SGD', 'MYR', 'THB'];
+ 
 function getSaldoMultiCurrency(walletId) {
   const base = getSaldo(walletId);
   const db   = getDb();
  
-  // Ambil hanya currency yang di-set user secara eksplisit
+  // 1. Cek custom currencies yang di-set user via /kurs
   const customs = db.prepare(
     'SELECT code, rate_to_idr FROM currencies WHERE wallet_id = ? ORDER BY code'
   ).all(walletId);
  
-  const conversions = customs.map(c => ({
-    code:   c.code,
-    symbol: CURRENCY_SYMBOLS[c.code] || c.code,
-    value:  c.rate_to_idr > 0 ? base.saldo / c.rate_to_idr : 0,
-  }));
+  let rateMap = {};
+ 
+  if (customs.length > 0) {
+    // Pakai rate custom user
+    for (const c of customs) rateMap[c.code] = c.rate_to_idr;
+  } else {
+    // Fallback: ambil dari live_rates untuk currency populer
+    const liveRows = db.prepare(
+      `SELECT code, rate_to_idr FROM live_rates WHERE code IN (${DEFAULT_DISPLAY_CURRENCIES.map(() => '?').join(',')}) ORDER BY code`
+    ).all(...DEFAULT_DISPLAY_CURRENCIES);
+    for (const r of liveRows) rateMap[r.code] = r.rate_to_idr;
+  }
+ 
+  const conversions = Object.entries(rateMap)
+    .filter(([, rate]) => rate > 0)
+    .map(([code, rate]) => ({
+      code,
+      symbol: CURRENCY_SYMBOLS[code] || code,
+      value:  base.saldo / rate,
+    }));
  
   return { ...base, conversions };
 }
