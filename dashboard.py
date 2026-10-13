@@ -28,11 +28,21 @@ init_database()
 # ─── HELPERS ────────────────────────────────────────────────────────────────
 
 def _wallet_id():
+    # 1. Dari query param
     wid = request.args.get('wallet_id', '').strip()
     if wid:
         return wid
+    # 2. Dari session cookie
+    wid = request.cookies.get('wallet_id', '').strip()
+    if wid:
+        return wid
     db = get_db()
-    row = _row(db.execute("SELECT id FROM wallets ORDER BY created_at ASC LIMIT 1"))
+    # 3. Wallet dengan transaksi terbanyak (paling aktif)
+    row = _row(db.execute(
+        "SELECT w.id FROM wallets w "
+        "LEFT JOIN transactions t ON t.wallet_id = w.id "
+        "GROUP BY w.id ORDER BY COUNT(t.id) DESC LIMIT 1"
+    ))
     return row['id'] if row else None
 
 
@@ -41,8 +51,20 @@ def _wallet_id():
 @app.route('/api/wallets')
 def api_wallets():
     db = get_db()
-    rows = _rows(db.execute("SELECT id, name, platform FROM wallets ORDER BY created_at ASC"))
+    # Urutkan: wallet dengan transaksi terbanyak di atas (sama dengan logika _wallet_id)
+    rows = _rows(db.execute(
+        "SELECT w.id, w.name, w.platform, COUNT(t.id) as tx_count "
+        "FROM wallets w LEFT JOIN transactions t ON t.wallet_id = w.id "
+        "GROUP BY w.id ORDER BY tx_count DESC, w.created_at ASC"
+    ))
     return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/default-wallet')
+def api_default_wallet():
+    """Kembalikan wallet_id default (wallet paling aktif)."""
+    wid = _wallet_id()
+    return jsonify({'wallet_id': wid})
 
 
 MULTI_CURRENCIES = [
@@ -195,6 +217,7 @@ def api_dashboard():
         proj = None
 
     return jsonify({
+        'wallet_id': wid,
         'wallet_name': wallet_info['name'] if wallet_info else wid,
         'saldo': saldo, 'saldo_fmt': format_rupiah(saldo),
         'main_saldo': main_saldo, 'main_saldo_fmt': format_rupiah(main_saldo),
@@ -942,8 +965,17 @@ const CURRENCY_COLORS = { IDR:'#10b981', USD:'#3b82f6', THB:'#8b5cf6', KHR:'#f59
 async function initWallets() {
   const r = await fetch('/api/wallets'); const ws = await r.json();
   const sel = document.getElementById('walletSel');
+  // Kalau wid belum di-set dari URL, ambil default dari server (wallet paling aktif)
+  if (!wid && ws.length) {
+    try {
+      const dr = await fetch('/api/default-wallet');
+      const dd = await dr.json();
+      wid = dd.wallet_id || ws[0].id;
+    } catch(e) {
+      wid = ws[0].id;
+    }
+  }
   sel.innerHTML = ws.map(w => `<option value="${w.id}" ${w.id===wid?'selected':''}>${w.name||w.id}</option>`).join('');
-  if (!wid && ws.length) wid = ws[0].id;
   loadDashboard();
 }
 function switchWallet(v) { wid=v; txOffset=0; loadDashboard(); loadCurrentTab(); }
