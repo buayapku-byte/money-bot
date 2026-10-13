@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Bot Telegram",
+      "type": "shell",
+      "command": "${workspaceFolder}/venv/Scripts/python.exe main.py",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": {
+        "group": "money-bot",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dashboard Flask",
+      "type": "shell",
+      "command": "${workspaceFolder}/venv/Scripts/python.exe dashboard.py",
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": {
+        "group": "money-bot",
+        "panel": "dedicated",
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "🚀 Jalankan Bot + Dashboard",
+      "dependsOn": ["Bot Telegram", "Dashboard Flask"],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}
