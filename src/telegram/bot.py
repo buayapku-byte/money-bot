@@ -404,16 +404,54 @@ async def cmd_saldo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         wallet = get_wallet(update)
         data = get_saldo_multi_currency(wallet['id'])
-        text = format_saldo(data, wallet['lang'])
 
-        # Tampilkan konversi currency jika ada
-        if data.get('conversions'):
-            lines = []
-            for c in data['conversions']:
-                val = c['value']
-                val_str = f"{round(val):,}" if abs(val) >= 100 else f"{val:.2f}"
-                lines.append(f"   ≈ {c['symbol']} {val_str} ({c['code']})")
-            text += '\n' + '\n'.join(lines)
+        # ── Cek apakah ada rekening bank ──────────────────────────────
+        from src.core.database import resolve_wallet_id
+        primary_id = resolve_wallet_id(wallet['id'])
+        bank_info = get_bank_summary(primary_id)
+
+        if bank_info['count'] > 0:
+            # Ada rekening bank → tampilkan total bank sebagai saldo utama
+            total_bank = bank_info['total_saldo']
+            sign = '✅' if total_bank >= 0 else '⚠️'
+            text = f'💰 *Saldo Sekarang*\n\n'
+            text += f'{sign} *Total Saldo Bank: {format_rupiah(total_bank)}*\n'
+            text += f'📈 Total masuk: {format_rupiah(data["total_masuk"])}\n'
+            text += f'📉 Total keluar: {format_rupiah(data["total_keluar"])}\n'
+
+            # List rekening bank
+            text += '\n🏦 *Rekening Bank:*\n'
+            for b in bank_info['banks']:
+                icon = b.get('icon', '🏦')
+                nama = b['name']
+                saldo_b = b['saldo']
+                saldo_sign = '✅' if saldo_b >= 0 else '⚠️'
+                text += f'{saldo_sign} {icon} *{nama}*: {format_rupiah(saldo_b)}\n'
+
+            # Konversi multi-currency berdasarkan total bank
+            if data.get('conversions'):
+                lines = []
+                for c in data['conversions']:
+                    # Hitung ulang konversi pakai total_bank
+                    rate = c.get('rate')
+                    if rate and rate > 0:
+                        val = total_bank / rate
+                        val_str = f"{round(val):,}" if abs(val) >= 100 else f"{val:.2f}"
+                        lines.append(f'   ≈ {c["symbol"]} {val_str} ({c["code"]})')
+                if lines:
+                    text += '\n' + '\n'.join(lines)
+        else:
+            # Tidak ada rekening bank → tampilkan saldo transaksi seperti biasa
+            text = format_saldo(data, wallet['lang'])
+
+            # Tampilkan konversi currency jika ada
+            if data.get('conversions'):
+                lines = []
+                for c in data['conversions']:
+                    val = c['value']
+                    val_str = f"{round(val):,}" if abs(val) >= 100 else f"{val:.2f}"
+                    lines.append(f"   ≈ {c['symbol']} {val_str} ({c['code']})")
+                text += '\n' + '\n'.join(lines)
 
         # Savings Rate Widget
         sr = get_savings_rate(wallet['id'])
